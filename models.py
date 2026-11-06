@@ -170,6 +170,7 @@ class User(Base):
         default=uuid4,
     )
     username: Mapped[str] = mapped_column(String(50), unique=True)
+    password_hash: Mapped[str] = mapped_column(String())
 
     followed: Mapped[list["Followed"]] = relationship(
         back_populates="user",
