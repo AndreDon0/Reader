@@ -155,7 +155,7 @@ class Chapter(Base):
     number: Mapped[int] = mapped_column()
     published_on: Mapped[datetime | None] = mapped_column(DateTime)
     url: Mapped[str] = mapped_column(String(500), unique=True)
-    file_path: Mapped[str | None] = mapped_column(String(200), unique=True)
+    file_path: Mapped[str | None] = mapped_column(String(1000), unique=True)
 
     id_book: Mapped[int] = mapped_column(ForeignKey("book.id_book"))
     book: Mapped["Book"] = relationship(back_populates="chapters")

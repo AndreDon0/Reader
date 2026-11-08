@@ -9,3 +9,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Credentials
+.env
+
+# Runtime logs
+logs/
+
+# Testing
+playground.py
