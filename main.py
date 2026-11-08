@@ -1,10 +1,12 @@
 import logging
+import signal
 import time
 from datetime import UTC, datetime
 
 from database import SessionLocal, initialize_database
 from models import SiteCheck
 from sites.novgo import Novgo
+from utils.custom_request import check_vpn_pool, close_vpn_pools
 from utils.logging_config import configure_logging
 
 
@@ -16,6 +18,8 @@ logger = logging.getLogger(__name__)
 def run_once() -> None:
     if not initialize_database():
         return
+    if SITE_CLASSES:
+        check_vpn_pool(SITE_CLASSES[0].url)
     for site_class in SITE_CLASSES:
         logger.info("Checking %s", site_class.name)
         try:
@@ -60,22 +64,27 @@ def main() -> None:
     configure_logging()
     logger.info("Reader worker started; polling every %s seconds", INTERVAL)
 
-    while True:
-        start = time.monotonic()
-        try:
-            run_once()
-        except Exception:
-            logger.exception("Worker cycle failed; will retry next cycle")
-        remaining = INTERVAL - (time.monotonic() - start)
-        if remaining < 0:
-            logger.warning("Can't keep up! Behind by %.1f seconds", -remaining)
-            # Failed slow cycles must not cause a busy retry loop.
-            time.sleep(1)
-        else:
-            time.sleep(remaining)
+    try:
+        while True:
+            start = time.monotonic()
+            try:
+                run_once()
+            except Exception:
+                logger.exception("Worker cycle failed; will retry next cycle")
+            remaining = INTERVAL - (time.monotonic() - start)
+            if remaining < 0:
+                logger.warning("Can't keep up! Behind by %.1f seconds", -remaining)
+                # Failed slow cycles must not cause a busy retry loop.
+                time.sleep(1)
+            else:
+                time.sleep(remaining)
+    finally:
+        close_vpn_pools()
 
 
 if __name__ == "__main__":
+    # Route service termination through main()'s cleanup just like Ctrl-C.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         main()
     except KeyboardInterrupt:

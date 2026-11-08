@@ -1,16 +1,17 @@
 """Fetch pages through a VLESS server pool, with direct access as a fallback."""
 
+import atexit
 import base64
 import json
 import logging
 import os
-import random
 import shutil
 import socket
 import subprocess
 import time
-from contextlib import contextmanager
-from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
+from threading import RLock
 from urllib.parse import parse_qsl, unquote, urlsplit
 from dotenv import load_dotenv
 
@@ -19,6 +20,10 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 POOL_REFRESH_SECONDS = 300
+HEALTH_TIMEOUT = 5
+HEALTH_WORKERS = 8
+_POOLS = {}
+_POOLS_LOCK = RLock()
 
 
 def _outbound(uri: str) -> dict:
@@ -106,64 +111,174 @@ def _servers(subscription_url: str) -> list[dict]:
     return servers
 
 
+class _Tunnel:
+    def __init__(self, proxy: str):
+        self.session = requests.Session()
+        self.session.trust_env = False
+        self.session.proxies = {"http": proxy, "https": proxy}
+        self.healthy = False
+
+    def check(self, url: str, timeout: float) -> str | None:
+        response = None
+        try:
+            response = self.session.request("GET", url, timeout=timeout)
+            response.raise_for_status()
+        except (requests.RequestException, OSError) as exc:
+            self.healthy = False
+            self.session.close()
+            return type(exc).__name__
+        else:
+            self.healthy = True
+            return None
+        finally:
+            if response is not None:
+                response.close()
+
+
 class _ServerPool:
-    """Keep working servers first and subscription data in memory only."""
+    """Own one Xray process and a reusable HTTP session for each VPN route."""
 
-    def __init__(self):
+    def __init__(self, subscription_url: str, executable: str):
+        self.subscription_url = subscription_url
+        self.executable = executable
         self.servers = []
+        self.tunnels = []
         self.refresh_at = 0
+        self.process = None
+        self.resources = ExitStack()
+        self.checked = False
+        self.next_tunnel = 0
+        self.lock = RLock()
 
-    def candidates(self, subscription_url: str) -> list[dict]:
+    def _start(self, servers: list[dict]):
+        # Start the replacement before releasing the existing working process.
+        with ExitStack() as resources:
+            process, proxies = resources.enter_context(_proxy(servers, self.executable))
+            tunnels = []
+            for proxy in proxies:
+                tunnel = _Tunnel(proxy)
+                resources.callback(tunnel.session.close)
+                tunnels.append(tunnel)
+            self.resources.close()
+            self.resources = resources.pop_all()
+        self.process, self.tunnels, self.servers = process, tunnels, servers
+        self.checked = False
+        self.next_tunnel = 0
+        logger.info("VPN started: %d persistent routes in one Xray process", len(tunnels))
+
+    def _ensure_started(self):
         now = time.monotonic()
-        if now >= self.refresh_at or not self.servers:
+        if now >= self.refresh_at:
+            self.refresh_at = now + 60  # Also back off failed initial subscriptions.
             try:
-                # Different subscription labels can describe the same outbound.
                 unique = {json.dumps(server, sort_keys=True): server
-                          for server in _servers(subscription_url)}
+                          for server in _servers(self.subscription_url)}
                 servers = list(unique.values())
                 if not servers:
                     raise ValueError("No VPN servers available")
-                random.shuffle(servers)
-                # Keep the previous working order across subscription refreshes.
-                previous = [server for server in self.servers if server in servers]
-                self.servers = previous + [server for server in servers if server not in previous]
+                old = {json.dumps(server, sort_keys=True) for server in self.servers}
+                if set(unique) != old:
+                    self._start(servers)
                 self.refresh_at = now + POOL_REFRESH_SECONDS
-                logger.info("VPN pool loaded: %d servers", len(self.servers))
             except Exception as exc:
                 if not self.servers:
                     raise
-                self.refresh_at = now + 60
-                logger.warning("VPN pool refresh failed (%s); using cached servers", type(exc).__name__)
-        return list(self.servers)
+                logger.warning("VPN pool refresh failed (%s); using cached routes", type(exc).__name__)
+        if not self.servers:
+            raise RuntimeError("VPN subscription unavailable; waiting before retry")
+        if self.process is None or self.process.poll() is not None:
+            self._start(self.servers)
 
-    def failed(self, server: dict):
-        self.servers.remove(server)
-        self.servers.append(server)
+    def _check(self, url: str, timeout: float) -> int:
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=min(HEALTH_WORKERS, len(self.tunnels))) as executor:
+            results = list(executor.map(lambda tunnel: tunnel.check(url, timeout), self.tunnels))
+        self.checked = True
+        for index, failure in enumerate(results, start=1):
+            if failure:
+                logger.debug("VPN route %d health check failed (%s)", index, failure)
+        healthy = sum(tunnel.healthy for tunnel in self.tunnels)
+        logger.info("VPN health check: %d/%d routes working (%.1fs)",
+                    healthy, len(self.tunnels), time.monotonic() - started)
+        return healthy
 
-    def succeeded(self, server: dict):
-        self.servers.remove(server)
-        self.servers.insert(0, server)
+    def check(self, url: str, timeout: float) -> int:
+        with self.lock:
+            self._ensure_started()
+            return self._check(url, timeout)
+
+    def request(self, method: str, url: str, timeout, **kwargs):
+        # Session objects are not shared between simultaneous health probes.
+        # This lock also prevents a process refresh while a request is running.
+        with self.lock:
+            self._ensure_started()
+            if not self.checked:
+                origin = urlsplit(url)
+                self._check(f"{origin.scheme}://{origin.netloc}/", HEALTH_TIMEOUT)
+            candidates = [tunnel for tunnel in self.tunnels if tunnel.healthy]
+            if candidates:
+                offset = self.next_tunnel % len(candidates)
+                candidates = candidates[offset:] + candidates[:offset]
+                self.next_tunnel += 1
+            for attempt, tunnel in enumerate(candidates, start=1):
+                try:
+                    return tunnel.session.request(method, url, timeout=timeout, **kwargs)
+                except (requests.RequestException, OSError) as exc:
+                    tunnel.healthy = False
+                    tunnel.session.close()
+                    logger.warning("VPN route attempt %d/%d failed (%s); disabled until next health check",
+                                   attempt, len(candidates), type(exc).__name__)
+            return None
+
+    def close(self):
+        with self.lock:
+            self.resources.close()
+            self.process = None
+            self.tunnels = []
+            self.checked = False
 
 
-@lru_cache(maxsize=8)
-def _server_pool(subscription_url: str) -> _ServerPool:
-    return _ServerPool()
+def _server_pool(subscription_url: str, executable: str) -> _ServerPool:
+    with _POOLS_LOCK:
+        key = (subscription_url, executable)
+        if key not in _POOLS:
+            _POOLS[key] = _ServerPool(subscription_url, executable)
+        return _POOLS[key]
+
+
+def close_vpn_pools():
+    """Close reusable sessions and terminate owned Xray processes."""
+    with _POOLS_LOCK:
+        for pool in _POOLS.values():
+            pool.close()
+        _POOLS.clear()
+
+
+atexit.register(close_vpn_pools)
 
 
 @contextmanager
-def _proxy(outbound: dict, xray_path: str):
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
+def _proxy(outbounds: list[dict], xray_path: str):
+    # Reserve all ports together so two routes cannot receive the same port.
+    with ExitStack() as listeners:
+        ports = []
+        for _ in outbounds:
+            listener = listeners.enter_context(socket.socket())
+            listener.bind(("127.0.0.1", 0))
+            ports.append(listener.getsockname()[1])
 
-    config = {
-        "log": {"loglevel": "none"},
-        "inbounds": [{
-            "listen": "127.0.0.1", "port": port,
-            "protocol": "http", "settings": {},
-        }],
-        "outbounds": [outbound],
-    }
+        config = {"log": {"loglevel": "none"}, "inbounds": [], "outbounds": [],
+                  "routing": {"rules": []}}
+        for index, (outbound, port) in enumerate(zip(outbounds, ports)):
+            inbound_tag, outbound_tag = f"in-{index}", f"out-{index}"
+            config["inbounds"].append({
+                "tag": inbound_tag, "listen": "127.0.0.1", "port": port,
+                "protocol": "http", "settings": {},
+            })
+            config["outbounds"].append({**outbound, "tag": outbound_tag})
+            config["routing"]["rules"].append({
+                "type": "field", "inboundTag": [inbound_tag], "outboundTag": outbound_tag,
+            })
     process = subprocess.Popen(
         [xray_path, "run", "-config", "stdin:", "-format", "json"],
         stdin=subprocess.PIPE,
@@ -179,18 +294,21 @@ def _proxy(outbound: dict, xray_path: str):
             raise RuntimeError("Xray exited while loading its configuration") from None
 
         deadline = time.monotonic() + 10
-        while True:
+        pending = set(ports)
+        while pending:
             if process.poll() is not None:
                 raise RuntimeError("Xray failed to start; check its version and subscription")
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
-                    break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Xray did not start within 10 seconds") from None
+            for port in list(pending):
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        pending.remove(port)
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Xray did not start within 10 seconds") from None
+            if pending:
                 time.sleep(0.05)
 
-        yield f"http://127.0.0.1:{port}"
+        yield process, [f"http://127.0.0.1:{port}" for port in ports]
     finally:
         if not process.stdin.closed:
             try:
@@ -222,15 +340,16 @@ def request(
     VPN_SUBSCRIPTION_URL or subscription_url; optionally set XRAY_PATH.
     Other keyword arguments (headers, params, cookies, json, data, etc.) are
     passed to requests. With a VPN, streaming and custom proxies are not
-    supported because the local proxy is stopped before this function returns.
+    supported. Sessions and Xray routes stay alive until close_vpn_pools().
 
-    Subscription servers are cached for five minutes. Each VPN server is tried
-    at most once per call; the last working server is preferred on later calls.
-    If all servers fail (or VPN setup fails), log an error and try the local
-    connection with environment proxies disabled. Return None only if that
-    request also fails. HTTP error responses are returned for the caller to
-    inspect; request_soup also checks their status before parsing. The timeout
-    applies to each attempt, so exhausting the pool can take longer than it.
+    Subscription servers are refreshed every five minutes. check_vpn_pool()
+    tests every route at the start of each worker cycle; standalone use probes
+    on first access too. Requests rotate through healthy routes, disabling any
+    failed route until the next check. If no working routes remain (or VPN
+    setup fails), log an error and try the local connection with environment
+    proxies disabled. Return None if that request also fails. HTTP error
+    responses are returned for the caller to inspect. Timeouts apply to each
+    attempt, rather than the entire operation.
 
     Example::
 
@@ -264,32 +383,44 @@ def _request_with_vpn(url, method, subscription_url, xray_path, timeout, **kwarg
         executable = shutil.which(xray_path or os.environ.get("XRAY_PATH", "xray"))
         if not executable:
             raise RuntimeError("Xray not found; install it or set XRAY_PATH")
-        pool = _server_pool(subscription_url)
-        candidates = pool.candidates(subscription_url)
+        response = _server_pool(subscription_url, executable).request(method, url, timeout, **kwargs)
     except Exception as exc:
         logger.error("VPN pool unavailable (%s); trying direct connection", type(exc).__name__)
     else:
-        for attempt, outbound in enumerate(candidates, start=1):
-            try:
-                with _proxy(outbound, executable) as proxy, requests.Session() as session:
-                    session.trust_env = False
-                    response = session.request(
-                        method, url, timeout=timeout,
-                        proxies={"http": proxy, "https": proxy}, **kwargs,
-                    )
-            except (requests.RequestException, OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                pool.failed(outbound)
-                logger.warning("VPN server attempt %d/%d failed (%s); trying next route",
-                               attempt, len(candidates), type(exc).__name__)
-            else:
-                pool.succeeded(outbound)
-                return response
-        logger.error("All %d VPN servers failed; trying direct connection", len(candidates))
+        if response is not None:
+            return response
+        logger.error("No working VPN routes remain; trying direct connection")
 
     with requests.Session() as session:
         # A direct fallback must not reuse HTTP_PROXY/HTTPS_PROXY/ALL_PROXY.
         session.trust_env = False
         return session.request(method, url, timeout=timeout, **kwargs)
+
+
+def check_vpn_pool(
+    probe_url: str,
+    *,
+    subscription_url: str | None = None,
+    xray_path: str | None = None,
+    timeout: float = HEALTH_TIMEOUT,
+) -> int:
+    """Probe every tunnel through HTTPS; return the number of usable routes.
+
+    Call once per worker cycle, including when no routes worked last time.
+    Failed routes can recover here. Health probes never fall back to direct.
+    """
+    try:
+        load_dotenv()
+        subscription_url = subscription_url or os.environ.get("VPN_SUBSCRIPTION_URL")
+        if not subscription_url:
+            return 0
+        executable = shutil.which(xray_path or os.environ.get("XRAY_PATH", "xray"))
+        if not executable:
+            raise RuntimeError("Xray not found; install it or set XRAY_PATH")
+        return _server_pool(subscription_url, executable).check(probe_url, timeout)
+    except Exception as exc:
+        logger.error("VPN health check unavailable (%s)", type(exc).__name__)
+        return 0
 
 
 def request_soup(url: str, *args, **kwargs) -> BeautifulSoup | None:

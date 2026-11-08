@@ -142,7 +142,7 @@ class RequestRecoveryTests(unittest.TestCase):
         with patch.object(custom_request.subprocess, "Popen", return_value=process):
             with patch.object(custom_request.socket, "create_connection"):
                 with self.assertRaisesRegex(RuntimeError, "request failed"):
-                    with custom_request._proxy({}, "/fake/xray"):
+                    with custom_request._proxy([{}], "/fake/xray"):
                         raise RuntimeError("request failed")
         process.terminate.assert_called_once()
         process.wait.assert_called_once_with(timeout=5)
@@ -270,6 +270,19 @@ class SiteRecoveryTests(unittest.TestCase):
 
 
 class WorkerRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        health = patch.object(main, "check_vpn_pool", return_value=0)
+        self.health = health.start()
+        self.addCleanup(health.stop)
+
+    def test_worker_shutdown_closes_persistent_vpn_resources(self):
+        with patch.object(main, "configure_logging"):
+            with patch.object(main, "run_once", side_effect=KeyboardInterrupt):
+                with patch.object(main, "close_vpn_pools") as close:
+                    with self.assertRaises(KeyboardInterrupt):
+                        main.main()
+        close.assert_called_once()
+
     def test_cycle_failure_is_logged_and_worker_runs_again(self):
         with patch.object(main, "configure_logging"):
             with patch.object(main, "run_once", side_effect=[RuntimeError("bad cycle"), KeyboardInterrupt]) as cycle:
@@ -315,6 +328,7 @@ class WorkerRecoveryTests(unittest.TestCase):
                     with self.assertLogs(main.logger, level="WARNING"):
                         main.run_once()
         self.assertEqual(processed, ["good"])
+        self.health.assert_called_once_with(BrokenSite.url)
         with factory() as session:
             checks = list(session.scalars(select(SiteCheck).order_by(SiteCheck.id_site)))
             self.assertEqual([check.is_up for check in checks], [False, True])
