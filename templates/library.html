@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="library-heading">
+  <div><p class="eyebrow">MAKE TIME FOR A STORY</p><h1>Your library</h1><p class="muted">A new world is only a chapter away.</p></div>
+  <div class="library-stats"><div><strong>{{ '{:,}'.format(total_books) }}</strong><span>books</span></div><div><strong>{{ '{:,}'.format(total_chapters) }}</strong><span>chapters collected</span></div></div>
+</section>
+<form class="search-form" method="get" action="{{ url_for('library') }}" role="search">
+  <label class="search-field"><span aria-hidden="true">⌕</span><span class="sr-only">Search books by title or author</span><input type="search" name="q" value="{{ q }}" placeholder="Search titles or authors…" maxlength="200"></label>
+  <label><span class="sr-only">Book status</span><select name="status"><option value="">All statuses</option>{% for item in statuses %}<option value="{{ item.value }}" {% if item.value == status %}selected{% endif %}>{{ item.value|capitalize }}</option>{% endfor %}</select></label>
+  <button class="button" type="submit">Search</button>
+</form>
+<div class="section-line"><h2>{% if q or status %}Search results{% else %}On the shelf{% endif %} <span class="count">{{ total }}</span></h2>{% if q or status %}<a class="text-link" href="{{ url_for('library') }}">Clear filters</a>{% else %}<span class="muted small">Newest additions first</span>{% endif %}</div>
+{% if books %}
+<div class="book-grid">
+  {% for book in books %}
+  <article class="book-card"><a class="cover-link cover-tone-{{ loop.index0 % 4 }}" href="{{ url_for('book_detail', book_id=book.id_book) }}" tabindex="-1" aria-hidden="true"><span class="cover-fallback">{{ book.title[:1] }}</span>{% if book.cover_url|safe_url %}<img src="{{ book.cover_url|safe_url }}" alt="" loading="lazy" referrerpolicy="no-referrer" data-cover>{% endif %}<span class="cover-label">{{ book.type.value|upper }}</span></a>
+    <div class="book-card-body"><span class="status status-{{ book.status.value }}">{{ book.status.value|capitalize }}</span><h3><a href="{{ url_for('book_detail', book_id=book.id_book) }}">{{ book.title }}</a></h3><p class="author">{{ book.author.nickname if book.author else 'Unknown author' }}</p><div class="book-card-meta"><span>{{ '{:,}'.format(book.chapters_count) }} chapters</span><span>{{ book.site.name }}</span></div></div>
+  </article>
+  {% endfor %}
+</div>
+{% else %}<section class="empty-state"><span class="empty-icon" aria-hidden="true">▤</span><h2>{% if q or status %}No matching books{% else %}Your shelf is waiting{% endif %}</h2><p class="muted">{% if q or status %}Try another title, author, or status.{% else %}Run the Reader worker to collect books. They’ll appear here as they’re saved.{% endif %}</p></section>{% endif %}
+{% if pages > 1 %}<nav class="pagination" aria-label="Library pages">{% if page > 1 %}<a class="button secondary" href="{{ url_for('library', q=q, status=status, page=page-1) }}">← Previous</a>{% else %}<span></span>{% endif %}<span>Page {{ page }} of {{ pages }}</span>{% if page < pages %}<a class="button secondary" href="{{ url_for('library', q=q, status=status, page=page+1) }}">Next →</a>{% else %}<span></span>{% endif %}</nav>{% endif %}
+{% endblock %}

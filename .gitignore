@@ -16,5 +16,8 @@ wheels/
 # Runtime logs
 logs/
 
+# Downloaded chapter text
+/data/
+
 # Testing
 playground.py
