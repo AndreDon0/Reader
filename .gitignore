@@ -16,7 +16,7 @@ wheels/
 # Runtime logs
 logs/
 
-# Downloaded chapter text
+# Downloaded chapters
 /data/
 
 # Testing

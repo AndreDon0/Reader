@@ -8,36 +8,64 @@ import signal
 from pathlib import Path
 from threading import Lock
 from urllib.parse import urlsplit
+from zipfile import BadZipFile, ZipFile
 
-from flask import Flask, abort, g, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, g, redirect, render_template, request, session, url_for
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload, selectinload
 
 import database
 from models import Author, Book, BookAltTitle, BookStatus, Chapter
-from sites.novgo import Novgo
+from sites.registry import SITE_CLASSES
+from utils.cbz import IMAGE_TYPES
 from utils.custom_request import close_vpn_pools
 from utils.logging_config import configure_logging
 
 ROOT = Path(__file__).resolve().parent
 LOAD_LOCK = Lock()
 logger = logging.getLogger(__name__)
+DOWNLOAD_SITES = {site.name: site for site in SITE_CLASSES}
 
 
-def cached_text(file_path: str | None, root: Path) -> str | None:
-    """Read only chapter files within data/, including after symlink resolution."""
+def cache_path(file_path: str | None, root: Path, suffix: str) -> Path | None:
+    """Resolve only chapter files within data/, even through symlinks."""
     if not file_path:
         return None
     try:
         path = (root / file_path).resolve()
-        if not path.is_relative_to((root / "data").resolve()):
-            return None
+        if path.suffix == suffix and path.is_relative_to((root / "data").resolve()):
+            return path
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return None
+
+
+def cached_text(file_path: str | None, root: Path) -> str | None:
+    path = cache_path(file_path, root, ".txt")
+    if path is None:
+        return None
+    try:
         text = path.read_text(encoding="utf-8")
         return text if text.strip() else None
     except (OSError, ValueError, UnicodeError) as exc:
         logger.warning("Cannot read cached chapter (%s)", type(exc).__name__)
         return None
+
+
+def cached_pages(file_path: str | None, root: Path) -> list[str]:
+    path = cache_path(file_path, root, ".cbz")
+    if path is None:
+        return []
+    try:
+        with ZipFile(path) as archive:
+            return sorted(
+                page.filename for page in archive.infolist()
+                if page.file_size and "/" not in page.filename
+                and Path(page.filename).suffix.lower() in IMAGE_TYPES
+            )
+    except (OSError, BadZipFile):
+        return []
 
 
 def safe_url(value: str | None) -> str | None:
@@ -110,8 +138,21 @@ def create_app(config: dict | None = None) -> Flask:
             abort(404, description="This chapter is not in your library.")
         return chapter
 
+    def download_site(chapter):
+        site = DOWNLOAD_SITES.get(chapter.book.site.name)
+        if site is not None and safe_url(chapter.url):
+            if urlsplit(chapter.url).netloc == urlsplit(site.url).netloc:
+                return site
+        return None
+
+    def is_cached(chapter):
+        root = Path(app.config["DATA_ROOT"])
+        return bool(cached_text(chapter.file_path, root) or cached_pages(chapter.file_path, root))
+
     def chapter_view(chapter, *, error=None, status=200):
-        text = cached_text(chapter.file_path, Path(app.config["DATA_ROOT"]))
+        root = Path(app.config["DATA_ROOT"])
+        pages = cached_pages(chapter.file_path, root)
+        text = cached_text(chapter.file_path, root)
         if text:
             lines = text.strip().splitlines()
             if lines and lines[0].strip() == chapter.name.strip():
@@ -130,9 +171,9 @@ def create_app(config: dict | None = None) -> Flask:
             Chapter.id_book == chapter.id_book, key <= current,
         ))
         list_page = (chapter_position - 1) // app.config["CHAPTERS_PER_PAGE"] + 1
-        supported = chapter.book.site.name == Novgo.name
+        supported = download_site(chapter) is not None
         return render_template("chapter.html", chapter=chapter, book=chapter.book,
-                               paragraphs=paragraphs, previous=previous, following=following,
+                               paragraphs=paragraphs, pages=pages, previous=previous, following=following,
                                list_page=list_page, supported=supported, error=error), status
 
     @app.get("/")
@@ -181,6 +222,19 @@ def create_app(config: dict | None = None) -> Flask:
     def read_chapter(chapter_id):
         return chapter_view(get_chapter(chapter_id))
 
+    @app.get("/chapters/<int:chapter_id>/pages/<name>")
+    def comic_page(chapter_id, name):
+        chapter = get_chapter(chapter_id)
+        path = cache_path(chapter.file_path, Path(app.config["DATA_ROOT"]), ".cbz")
+        mime = IMAGE_TYPES.get(Path(name).suffix.lower())
+        if path is None or mime is None:
+            abort(404)
+        try:
+            with ZipFile(path) as archive:
+                return Response(archive.read(name), mimetype=mime, headers={"X-Content-Type-Options": "nosniff"})
+        except (OSError, BadZipFile, KeyError, RuntimeError, NotImplementedError):
+            abort(404)
+
     @app.post("/chapters/<int:chapter_id>/load")
     def load_chapter(chapter_id):
         provided = request.form.get("csrf_token", "")
@@ -188,16 +242,19 @@ def create_app(config: dict | None = None) -> Flask:
             abort(400, description="This page expired. Reload the chapter page and try again.")
         with LOAD_LOCK:
             chapter = get_chapter(chapter_id)
-            if cached_text(chapter.file_path, Path(app.config["DATA_ROOT"])):
+            if is_cached(chapter):
                 return redirect(url_for("read_chapter", chapter_id=chapter_id), code=303)
             loader = app.config["CHAPTER_LOADER"]
             if loader is None:
-                if chapter.book.site.name != Novgo.name or urlsplit(chapter.url).hostname != urlsplit(Novgo.url).hostname:
+                site = download_site(chapter)
+                if site is None:
                     return chapter_view(chapter, error="Chapter downloads are not supported for this source yet.", status=422)
-                loader = lambda connection, item: Novgo(connection).process_chapter(item.url)
+                loader = lambda connection, item: site(connection).process_chapter(
+                    item.url, data_root=Path(app.config["DATA_ROOT"]),
+                )
             try:
                 loaded = loader(db(), chapter)
-                if loaded and cached_text(chapter.file_path, Path(app.config["DATA_ROOT"])):
+                if loaded and is_cached(chapter):
                     db().commit()
                     return redirect(url_for("read_chapter", chapter_id=chapter_id), code=303)
                 db().rollback()

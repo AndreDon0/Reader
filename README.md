@@ -21,16 +21,17 @@ Browse or search books by title/author, filter by status, open a book's chapter
 list, and use previous/next navigation in the reader. Reading size, color theme,
 and the last opened chapter for each book are remembered in your browser.
 
-The database stores chapter metadata and a cache path; chapter text lives under
-`data/`. For a chapter that is not downloaded, click **Load chapter**. The website
-uses the existing NOVGO scraper and VPN pool to fetch it, saves the text and
-updates its database path, then opens the reader. Cached chapters work without
-contacting the source again. Download failures show a retry message. Other
-sources can be browsed and their cached chapters read, but downloads currently
-support NOVGO only.
+The database stores chapter metadata and a cache path. For a chapter that is
+not downloaded, click **Load chapter**. NOVGO chapters are saved as text.
+[Manhuazhan](https://www.manhuazhan.com/) chapters are saved as one `.cbz` file
+each under `data/Manhuazhan/<book-id>/`. A CBZ is a ZIP of page images, numbered
+in reading order. The browser displays the pages directly from that archive,
+and cached chapters work without contacting the source. If a page download
+fails, the reader offers a retry and no partial archive is saved.
 
 The worker remains a separate process (`uv run python main.py`); opening the
-website does not start a catalogue crawl. Each process owns its own VPN pool.
+website does not start a catalogue crawl. The worker imports recent releases
+from the NOVGO and Manhuazhan homepages. Each process owns its own VPN pool.
 
 VPN requests use `VPN_SUBSCRIPTION_URL` and the `xray` executable (or `XRAY_PATH`).
 One Xray process keeps a separate local HTTP proxy route for each distinct

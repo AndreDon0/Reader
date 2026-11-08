@@ -252,16 +252,16 @@ class Novgo(BaseSite):
         return completed
 
 
-    def process_chapter(self, chapter_url: str) -> bool:
+    def process_chapter(self, chapter_url: str, *, data_root: Path | None = None) -> bool:
         try:
             with self.session.begin_nested():
-                return self._process_chapter(chapter_url)
+                return self._process_chapter(chapter_url, data_root)
         except Exception:
             logger.exception("Cannot process chapter %s; chapter changes rolled back", chapter_url)
             return False
 
 
-    def _process_chapter(self, chapter_url: str) -> bool:
+    def _process_chapter(self, chapter_url: str, data_root: Path | None) -> bool:
         chapter = self.session.scalar(
             select(Chapter).where(Chapter.url == chapter_url)
         )
@@ -285,7 +285,7 @@ class Novgo(BaseSite):
             return False
 
         # novgo.py is inside Reader/sites/, so parents[1] is Reader/.
-        base = Path(__file__).resolve().parents[1]
+        base = data_root or Path(__file__).resolve().parents[1]
 
         book_folder = (
             base

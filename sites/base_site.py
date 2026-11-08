@@ -1,5 +1,6 @@
 import logging
 import re
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,13 +48,13 @@ class BaseSite:
     def search(self, title: str) -> list[str]:
         return []
 
-    # Process book by url
-    def process_book(self, url: str) -> bool:
+    def process_book(self, url: str) -> bool | None:
+        """Return True on success, False on failure, or None if the source marks it unavailable."""
         logger.warning("Book processing is not implemented for %s", self.name)
         return False
 
     # Process chapter by url
-    def process_chapter(self, url: str) -> bool:
+    def process_chapter(self, url: str, *, data_root: Path | None = None) -> bool:
         logger.warning("Chapter processing is not implemented for %s", self.name)
         return False
 
