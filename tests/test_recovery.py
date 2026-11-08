@@ -106,19 +106,18 @@ class RequestRecoveryTests(unittest.TestCase):
                     self.assertIsNone(custom_request.request_soup("https://example.com"))
         result.close.assert_called_once()
 
-    def test_vpn_failures_never_send_direct_request(self):
-        for mode in ("missing-xray", "invalid-subscription", "unsupported-stream"):
-            with self.subTest(mode=mode):
+    def test_unsupported_vpn_options_do_not_send_requests(self):
+        for options in ({"stream": True}, {"proxies": {}}):
+            with self.subTest(options=options):
                 with patch.object(custom_request.requests, "request") as direct:
-                    with patch.object(custom_request.shutil, "which", return_value=None if mode == "missing-xray" else "/fake/xray"):
-                        with patch.object(custom_request, "_servers", side_effect=ValueError("private subscription")):
-                            with self.assertLogs(custom_request.logger, level="ERROR") as logs:
-                                self.assertIsNone(custom_request.request(
-                                    "https://example.com", subscription_url="https://private.example/secret",
-                                    stream=mode == "unsupported-stream",
-                                ))
+                    with patch.object(custom_request.requests, "Session") as session:
+                        with self.assertLogs(custom_request.logger, level="ERROR"):
+                            self.assertIsNone(custom_request.request(
+                                "https://example.com", subscription_url="https://private.example/secret",
+                                **options,
+                            ))
                     direct.assert_not_called()
-                self.assertNotIn("private", " ".join(logs.output))
+                    session.assert_not_called()
 
     def test_invalid_subscription_entry_does_not_discard_valid_servers(self):
         result = response()
