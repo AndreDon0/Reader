@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 import requests
 from bs4 import BeautifulSoup
 
+from config import VPN_SUBSCRIPTION_URL
+
 logger = logging.getLogger(__name__)
 POOL_REFRESH_SECONDS = 300
 HEALTH_TIMEOUT = 5
@@ -365,7 +367,7 @@ def request(
                 raise ValueError("Direct requests cannot specify a proxy")
             return _request_direct(method, url, timeout, **kwargs)
         load_dotenv()
-        subscription_url = subscription_url or os.environ.get("VPN_SUBSCRIPTION_URL")
+        subscription_url = subscription_url or VPN_SUBSCRIPTION_URL
         if not subscription_url:
             response = requests.request(method, url, timeout=timeout, **kwargs)
         else:
@@ -420,8 +422,7 @@ def check_vpn_pool(
     Failed routes can recover here. Health probes never fall back to direct.
     """
     try:
-        load_dotenv()
-        subscription_url = subscription_url or os.environ.get("VPN_SUBSCRIPTION_URL")
+        subscription_url = subscription_url or VPN_SUBSCRIPTION_URL
         if not subscription_url:
             return 0
         executable = shutil.which(xray_path or os.environ.get("XRAY_PATH", "xray"))
@@ -437,6 +438,7 @@ def request_soup(url: str, *args, **kwargs) -> BeautifulSoup | None:
     """Return parsed HTML, or None after logging a request/status/parse failure."""
     response = request(url, *args, **kwargs)
     if response is None:
+        logger.warning("Responce for %s in None", url)
         return None
     try:
         response.raise_for_status()

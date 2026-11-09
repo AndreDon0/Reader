@@ -9,7 +9,7 @@ from threading import Event
 
 from sqlalchemy import exists, select
 
-from database import SessionLocal, initialize_database
+from database import SessionLocal
 from models import Book, Followed, SiteCheck, User
 from sites.base_site import BaseSite
 from sites.registry import SITE_CLASSES
@@ -17,18 +17,9 @@ from utils.custom_request import check_vpn_pool, close_vpn_pools
 from utils.logging_config import configure_logging
 from utils.jobs import enqueue_watched, recover_interrupted, run_cache_worker, run_import
 
-
-INTERVAL = 120
-UNAVAILABLE_RETRY_SECONDS = 3600
-CATALOG_BATCH_DELAY = 0.5
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class SiteState:
-    catalog_cursor: str | None = None
-    watch_cursor: int = 0
-    unavailable_until: dict[str, float] = field(default_factory=dict)
+INTERVAL = 120
 
 
 def run_site_once(site_class: type[BaseSite], state: SiteState, stop: Event) -> None:
@@ -137,11 +128,6 @@ def main() -> None:
     stop = Event()
 
     try:
-        while not initialize_database():
-            stop.wait(INTERVAL)
-
-        if not SITE_CLASSES:
-            return
         vpn_probe_url = next((site.url for site in SITE_CLASSES if site.use_vpn), None)
         recover_interrupted(SessionLocal)
         with ThreadPoolExecutor(max_workers=len(SITE_CLASSES) + bool(vpn_probe_url) + 1) as executor:
@@ -159,8 +145,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # Route service termination through main()'s cleanup just like Ctrl-C.
-    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         main()
     except KeyboardInterrupt:
