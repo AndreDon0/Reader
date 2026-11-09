@@ -10,7 +10,7 @@ from utils.custom_request import check_vpn_pool, close_vpn_pools
 from utils.logging_config import configure_logging
 
 
-INTERVAL = 60
+INTERVAL = 120
 UNAVAILABLE_RETRY_SECONDS = 3600
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,6 @@ def main() -> None:
             remaining = INTERVAL - (time.monotonic() - start)
             if remaining < 0:
                 logger.warning("Can't keep up! Behind by %.1f seconds", -remaining)
-                # Failed slow cycles must not cause a busy retry loop.
                 time.sleep(1)
             else:
                 time.sleep(remaining)

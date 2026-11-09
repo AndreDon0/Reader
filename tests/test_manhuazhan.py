@@ -78,6 +78,7 @@ class ManhuazhanTests(unittest.TestCase):
           <div id="weekcon"><dl>
             <dd><span><a href="/chapter/42-101.html">第一话</a></span><a href="/comic/42">漫画</a></dd>
             <dd><a href="/comic/42/">重复</a><a href="https://other.example/comic/42">Other</a></dd>
+            <dd><span><a href="">待浏览</a></span><a href="/comic/621024">待更新漫画</a></dd>
           </dl></div>
         """, Manhuazhan.url)
         with self.factory.begin() as db:
@@ -123,6 +124,12 @@ class ManhuazhanTests(unittest.TestCase):
         self.assertEqual(self.html.call_count, 2)
         with self.factory() as db:
             self.assertEqual(db.scalar(select(Book.url)), BOOK_URL)
+
+    def test_empty_chapter_list_is_unavailable_and_does_not_create_a_book(self):
+        self.html.return_value = book_page("")
+        with self.factory.begin() as db:
+            self.assertIsNone(Manhuazhan(db).process_book(BOOK_URL))
+            self.assertIsNone(db.scalar(select(Book)))
 
     def test_web_load_saves_and_reads_cbz_in_page_order(self):
         chapter_id = self.import_book()

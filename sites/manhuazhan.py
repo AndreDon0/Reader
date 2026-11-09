@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 BOOK_PATH = re.compile(r"/comic/([0-9]+)/?")
 UNAVAILABLE_BOOK_PATH = re.compile(r"/err/comic/?")
 CHAPTER_PATH = re.compile(r"/chapter/([0-9]+)-([0-9]+)\.html")
+NO_CHAPTER_LABEL = "待浏览"
 IMAGE_DOMAINS = ("bzcdn.net", "baozimh.com", "baozimhcn.com")
 
 # The site's reader selects a key by cid % 10. DATA is Base64 around an
@@ -48,11 +49,15 @@ class Manhuazhan(BaseSite):
         soup = request_soup(self.url, timeout=10)
         if soup is None:
             return []
-        return list(dict.fromkeys(
-            urljoin(self.url, f"/comic/{match[1]}")
-            for link in soup.select("#weekcon dd > a[href]")
-            if (match := self._site_path(link["href"], BOOK_PATH))
-        ))
+
+        book_urls = []
+        for link in soup.select("#weekcon dd > a[href]"):
+            latest_chapter = link.parent.select_one("span")
+            if latest_chapter and latest_chapter.get_text(strip=True) == NO_CHAPTER_LABEL:
+                continue
+            if match := self._site_path(link["href"], BOOK_PATH):
+                book_urls.append(urljoin(self.url, f"/comic/{match[1]}"))
+        return list(dict.fromkeys(book_urls))
 
     def process_book(self, book_url: str) -> bool | None:
         try:
@@ -86,14 +91,21 @@ class Manhuazhan(BaseSite):
             logger.warning("Book metadata missing for %s", book_url)
             return False
 
+        links = soup.select("#playlist .d-player-list a[href]")
+        if not links:
+            if soup.select_one("#playlist .d-player-list") is not None:
+                return None
+            logger.warning("Chapter list missing for %s", book_url)
+            return False
+
         chapters = {}
-        for link in soup.select("#playlist .d-player-list a[href]"):
+        for link in links:
             chapter = self._site_path(link["href"], CHAPTER_PATH)
             name = link.get_text(" ", strip=True)
             if chapter and chapter[1] == comic_id and name:
                 chapters[urljoin(self.url, chapter[0])] = name
         if not chapters:
-            logger.warning("Chapter list missing for %s", book_url)
+            logger.warning("No usable chapter links for %s", book_url)
             return False
 
         metadata = {}

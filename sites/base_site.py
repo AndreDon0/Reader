@@ -53,6 +53,10 @@ class BaseSite:
         logger.warning("Book processing is not implemented for %s", self.name)
         return False
 
+    # Process whole catalog
+    def process_catalog() -> None:
+        pass
+
     # Process chapter by url
     def process_chapter(self, url: str, *, data_root: Path | None = None) -> bool:
         logger.warning("Chapter processing is not implemented for %s", self.name)
