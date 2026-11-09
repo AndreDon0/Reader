@@ -12,13 +12,6 @@ wheels/
 
 # Credentials
 .env
-.env.truenas
 
 # Runtime logs
 logs/
-
-# Downloaded chapters
-/data/
-
-# Testing
-playground.py
