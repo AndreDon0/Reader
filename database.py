@@ -17,7 +17,7 @@ DATABASE_URL = str(URL.create(
     host="127.0.0.1",
     port=60209,
     database="reader",
-))
+).render_as_string(hide_password=False))
 
 engine = None
 SessionLocal = sessionmaker()
