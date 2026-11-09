@@ -1,15 +1,29 @@
 {% extends 'base.html' %}
-{% block title %}{{ chapter.name }} · {{ book.title }} · Reader{% endblock %}
+{% block title %}{{ chapter.label }} · {{ book.title }} · Reader{% endblock %}
 {% block main_class %}reader-container{% endblock %}
 {% block content %}
 <a class="back-link" href="{{ url_for('book_detail', book_id=book.id_book, page=list_page) }}">← {{ book.title }}</a>
 <div class="reading-toolbar"><span class="eyebrow">CHAPTER {{ chapter.number }}</span>{% if not pages %}<div class="font-controls" role="group" aria-label="Reading text size"><button type="button" class="icon-button" data-font="-1" aria-label="Decrease text size">A−</button><button type="button" class="icon-button" data-font="1" aria-label="Increase text size">A+</button></div>{% endif %}</div>
-<article class="reading-article" {% if paragraphs or pages %}data-reader-book="{{ book.id_book }}" data-reader-chapter="{{ chapter.id_chapter }}"{% endif %}><h1>{{ chapter.name }}</h1>
+<article class="reading-article"{% if view %} data-progress-url="{{ url_for('save_progress', chapter_id=chapter.id_chapter) }}" data-view="{{ view }}" data-csrf="{{ csrf_token() }}" data-anchor="{{ saved.anchor if saved else 0 }}" data-offset="{{ saved.anchor_offset if saved else 0 }}" data-finished="{{ 1 if saved and saved.finished else 0 }}"{% endif %}><h1>{{ chapter.label }}</h1>
 {% if pages %}<div class="comic-pages">{% for page in pages %}
-  <img src="{{ url_for('comic_page', chapter_id=chapter.id_chapter, name=page) }}" alt="Page {{ loop.index }}" {% if not loop.first %}loading="lazy"{% endif %}>
+  <img src="{{ url_for('comic_page', chapter_id=chapter.id_chapter, name=page) }}" alt="Page {{ loop.index }}" data-reading-anchor {% if not loop.first %}loading="lazy"{% endif %}>
 {% endfor %}</div>
-{% elif paragraphs %}<div class="chapter-body">{% for paragraph in paragraphs %}<p>{{ paragraph }}</p>{% endfor %}</div>
-{% else %}<div class="load-state">{% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}<span class="empty-icon" aria-hidden="true">▤</span><h2>Your next chapter is here.</h2><p class="muted">{% if supported %}Load this chapter from {{ book.site.name }} to read it here. It will be saved for next time.{% else %}This chapter hasn’t been downloaded. You can read it on the original site.{% endif %}</p>{% if supported %}<form method="post" action="{{ url_for('load_chapter', chapter_id=chapter.id_chapter) }}" data-load-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="button" data-load-button>Load chapter <span aria-hidden="true">↓</span></button><p class="muted small load-hint" aria-live="polite">The first load may take a moment while VPN routes are checked.</p></form>{% endif %}{% if chapter.url|safe_url %}<a class="text-link" href="{{ chapter.url|safe_url }}" target="_blank" rel="noopener noreferrer">Read on {{ book.site.name }} ↗</a>{% endif %}</div>{% endif %}
+{% elif paragraphs %}<div class="chapter-body">{% for paragraph in paragraphs %}<p data-reading-anchor>{{ paragraph }}</p>{% endfor %}</div>
+{% else %}
+<div class="load-state">
+  {% if job and job.state in ('queued', 'running') %}
+    <h2>{{ 'Downloading chapter…' if job.state == 'running' else 'Chapter queued' }}</h2>
+    <p class="muted" data-download-status="{{ url_for('download_status', chapter_id=chapter.id_chapter) }}">The worker will cache it on the NAS.</p>
+    <a class="text-link" href="{{ url_for('read_chapter', chapter_id=chapter.id_chapter) }}">Refresh status</a>
+  {% elif supported %}
+    <h2>{{ 'Download failed' if job and job.state == 'failed' else 'This chapter is not cached yet' }}</h2>
+    <form method="post" action="{{ url_for('load_chapter', chapter_id=chapter.id_chapter) }}" data-load-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" class="button" data-load-button>{{ 'Retry download' if job and job.state == 'failed' else 'Download chapter' }}</button></form>
+  {% else %}
+    <h2>Read on the original site</h2>
+  {% endif %}
+  {% if chapter.url|safe_url %}<a class="text-link" href="{{ chapter.url|safe_url }}" target="_blank" rel="noopener noreferrer">Read on {{ book.site.name }} ↗</a>{% endif %}
+</div>
+{% endif %}
 </article>
-<nav class="reader-navigation" aria-label="Chapter navigation">{% if previous %}<a class="button secondary" rel="prev" href="{{ url_for('read_chapter', chapter_id=previous.id_chapter) }}">← Previous</a>{% else %}<span class="muted small">First chapter</span>{% endif %}<a class="text-link" href="{{ url_for('book_detail', book_id=book.id_book, page=list_page) }}">Chapter list</a>{% if following %}<a class="button" rel="next" href="{{ url_for('read_chapter', chapter_id=following.id_chapter) }}">Next chapter →</a>{% else %}<span class="muted small">Last collected chapter</span>{% endif %}</nav>
+<nav class="reader-navigation" aria-label="Chapter navigation">{% if previous %}<a class="button secondary" rel="prev" href="{{ url_for('read_chapter', chapter_id=previous.id_chapter) }}">← Previous</a>{% else %}<span class="muted small">First chapter</span>{% endif %}<a class="text-link" href="{{ url_for('book_detail', book_id=book.id_book, page=list_page) }}">Chapter list</a>{% if following %}<a class="button" rel="next" data-next-chapter href="{{ url_for('read_chapter', chapter_id=following.id_chapter) }}">Next chapter →</a>{% else %}<span class="muted small">Last collected chapter</span>{% endif %}</nav>
 {% endblock %}

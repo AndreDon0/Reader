@@ -5,7 +5,9 @@ import logging
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import Mock, patch
 
 import requests
@@ -16,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import database
 import main
 from models import Base, Book, Chapter, Site, SiteCheck
-from sites.base_site import BaseSite
+from sites.base_site import BaseSite, SourceSearchUnavailable
 from sites.novgo import Novgo
 from utils import custom_request, password
 from utils.logging_config import RedactingFormatter, configure_logging
@@ -71,6 +73,19 @@ class RequestRecoveryTests(unittest.TestCase):
         with patch.object(custom_request.requests, "request", return_value=result) as fetch:
             self.assertIs(custom_request.request("https://example.com", stream=True), result)
         fetch.assert_called_once_with("GET", "https://example.com", timeout=30, stream=True)
+
+    def test_explicit_direct_request_bypasses_configured_vpn_and_environment_proxies(self):
+        with patch.dict(os.environ, {"VPN_SUBSCRIPTION_URL": "https://vpn.example/sub",
+                                     "HTTPS_PROXY": "http://proxy.example"}):
+            with patch.object(custom_request.requests, "Session") as factory:
+                with patch.object(custom_request, "_server_pool") as vpn:
+                    session = factory.return_value.__enter__.return_value
+                    session.request.return_value = response()
+                    result = custom_request.request("https://example.com", direct=True, timeout=10)
+        self.assertIs(result, session.request.return_value)
+        self.assertFalse(session.trust_env)
+        session.request.assert_called_once_with("GET", "https://example.com", timeout=10)
+        vpn.assert_not_called()
 
     def test_connection_error_is_logged_without_exception_secrets(self):
         with patch.object(custom_request.requests, "request", side_effect=requests.ConnectionError("secret")):
@@ -241,7 +256,8 @@ class SiteRecoveryTests(unittest.TestCase):
             with patch("sites.novgo.request_soup", return_value=page):
                 with patch("sites.novgo.logger"):
                     self.assertEqual(self.site.new(), [])
-                    self.assertEqual(self.site.search("Example"), [])
+                    with self.assertRaises(SourceSearchUnavailable):
+                        self.site.search("Example")
 
     def test_missing_chapter_returns_false(self):
         with self.assertLogs("sites.novgo", level="WARNING"):
@@ -270,30 +286,72 @@ class SiteRecoveryTests(unittest.TestCase):
 
 
 class WorkerRecoveryTests(unittest.TestCase):
-    def setUp(self):
-        health = patch.object(main, "check_vpn_pool", return_value=0)
-        self.health = health.start()
-        self.addCleanup(health.stop)
-
     def test_worker_shutdown_closes_persistent_vpn_resources(self):
-        with patch.object(main, "configure_logging"):
-            with patch.object(main, "run_once", side_effect=KeyboardInterrupt):
-                with patch.object(main, "close_vpn_pools") as close:
-                    with self.assertRaises(KeyboardInterrupt):
-                        main.main()
+        stop = Mock()
+        stop.wait.side_effect = KeyboardInterrupt
+        self.enterContext(patch.object(main, "Event", return_value=stop))
+        self.enterContext(patch.object(main, "configure_logging"))
+        self.enterContext(patch.object(main, "initialize_database", return_value=True))
+        self.enterContext(patch.object(main, "recover_interrupted"))
+        self.enterContext(patch.object(main, "run_cache_worker"))
+        self.enterContext(patch.object(main, "run_site"))
+        self.enterContext(patch.object(main, "run_periodically"))
+        close = self.enterContext(patch.object(main, "close_vpn_pools"))
+        with self.assertRaises(KeyboardInterrupt):
+            main.main()
+        stop.set.assert_called_once()
         close.assert_called_once()
 
     def test_cycle_failure_is_logged_and_worker_runs_again(self):
-        with patch.object(main, "configure_logging"):
-            with patch.object(main, "run_once", side_effect=[RuntimeError("bad cycle"), KeyboardInterrupt]) as cycle:
-                with patch.object(main.time, "sleep") as sleep:
-                    with self.assertLogs(main.logger, level="ERROR"):
-                        with self.assertRaises(KeyboardInterrupt):
-                            main.main()
+        stop = Mock()
+        stop.is_set.side_effect = [False, False, True]
+        cycle = Mock(side_effect=[RuntimeError("bad cycle"), None])
+        with self.assertLogs(main.logger, level="ERROR"):
+            main.run_periodically("Example", cycle, stop)
         self.assertEqual(cycle.call_count, 2)
-        sleep.assert_called_once()
+        self.assertEqual(stop.wait.call_count, 2)
 
-    def test_failed_book_does_not_stop_other_books_or_sites(self):
+    def test_fast_site_polls_again_while_slow_site_is_still_working(self):
+        stop, slow_started, release_slow, fast_polled_twice = (Event() for _ in range(4))
+
+        class Slow(BaseSite):
+            name, use_vpn = "Slow", False
+
+        class Fast(BaseSite):
+            name, use_vpn = "Fast", False
+
+        fast_cycles = 0
+
+        def cycle(site, state, event):
+            nonlocal fast_cycles
+            if site is Slow:
+                slow_started.set()
+                release_slow.wait()
+            else:
+                fast_cycles += 1
+                if fast_cycles >= 2:
+                    fast_polled_twice.set()
+
+        self.enterContext(patch.object(main, "SITE_CLASSES", (Slow, Fast)))
+        self.enterContext(patch.object(main, "Event", return_value=stop))
+        self.enterContext(patch.object(main, "INTERVAL", 0.02))
+        self.enterContext(patch.object(main, "configure_logging"))
+        self.enterContext(patch.object(main, "initialize_database", return_value=True))
+        self.enterContext(patch.object(main, "recover_interrupted"))
+        self.enterContext(patch.object(main, "run_cache_worker"))
+        self.enterContext(patch.object(main, "close_vpn_pools"))
+        self.enterContext(patch.object(main, "run_site_once", side_effect=cycle))
+        with ThreadPoolExecutor() as executor:
+            worker = executor.submit(main.main)
+            try:
+                self.assertTrue(slow_started.wait(2))
+                self.assertTrue(fast_polled_twice.wait(2))
+            finally:
+                stop.set()
+                release_slow.set()
+            worker.result(timeout=2)
+
+    def test_failed_health_check_and_book_are_isolated(self):
         engine = create_engine("sqlite://")
         self.addCleanup(engine.dispose)
         Base.metadata.create_all(engine)
@@ -322,13 +380,11 @@ class WorkerRecoveryTests(unittest.TestCase):
                 processed.append(url)
                 return True
 
-        with patch.object(main, "initialize_database", return_value=True):
-            with patch.object(main, "SessionLocal", factory):
-                with patch.object(main, "SITE_CLASSES", (BrokenSite, WorkingSite)):
-                    with self.assertLogs(main.logger, level="WARNING"):
-                        main.run_once()
+        with patch.object(main, "SessionLocal", factory):
+            with self.assertLogs(main.logger, level="WARNING"):
+                main.run_site_once(BrokenSite, main.SiteState(), Event())
+                main.run_site_once(WorkingSite, main.SiteState(), Event())
         self.assertEqual(processed, ["good"])
-        self.health.assert_called_once_with(BrokenSite.url)
         with factory() as session:
             checks = list(session.scalars(select(SiteCheck).order_by(SiteCheck.id_site)))
             self.assertEqual([check.is_up for check in checks], [False, True])

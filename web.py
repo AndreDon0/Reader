@@ -5,67 +5,28 @@ import logging
 import os
 import secrets
 import signal
+from datetime import timedelta
 from pathlib import Path
-from threading import Lock
 from urllib.parse import urlsplit
 from zipfile import BadZipFile, ZipFile
 
-from flask import Flask, Response, abort, g, redirect, render_template, request, session, url_for
-from sqlalchemy import func, or_, select, tuple_
+from flask import Flask, Response, abort, g, render_template, request, session
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload, selectinload
 
 import database
-from models import Author, Book, BookAltTitle, BookStatus, Chapter
-from sites.registry import SITE_CLASSES
+from models import Book, Chapter, DownloadJob, Followed, FollowedStatus, ReadChapter
+from reader_web import accounts, admin, catalog, reading
 from utils.cbz import IMAGE_TYPES
+from utils.chapter_cache import cache_path, cached_pages, cached_text
 from utils.custom_request import close_vpn_pools
 from utils.logging_config import configure_logging
+from utils.jobs import SOURCES, download_site
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 ROOT = Path(__file__).resolve().parent
-LOAD_LOCK = Lock()
 logger = logging.getLogger(__name__)
-DOWNLOAD_SITES = {site.name: site for site in SITE_CLASSES}
-
-
-def cache_path(file_path: str | None, root: Path, suffix: str) -> Path | None:
-    """Resolve only chapter files within data/, even through symlinks."""
-    if not file_path:
-        return None
-    try:
-        path = (root / file_path).resolve()
-        if path.suffix == suffix and path.is_relative_to((root / "data").resolve()):
-            return path
-    except (OSError, ValueError, RuntimeError):
-        pass
-    return None
-
-
-def cached_text(file_path: str | None, root: Path) -> str | None:
-    path = cache_path(file_path, root, ".txt")
-    if path is None:
-        return None
-    try:
-        text = path.read_text(encoding="utf-8")
-        return text if text.strip() else None
-    except (OSError, ValueError, UnicodeError) as exc:
-        logger.warning("Cannot read cached chapter (%s)", type(exc).__name__)
-        return None
-
-
-def cached_pages(file_path: str | None, root: Path) -> list[str]:
-    path = cache_path(file_path, root, ".cbz")
-    if path is None:
-        return []
-    try:
-        with ZipFile(path) as archive:
-            return sorted(
-                page.filename for page in archive.infolist()
-                if page.file_size and "/" not in page.filename
-                and Path(page.filename).suffix.lower() in IMAGE_TYPES
-            )
-    except (OSError, BadZipFile):
-        return []
 
 
 def safe_url(value: str | None) -> str | None:
@@ -86,10 +47,16 @@ def create_app(config: dict | None = None) -> Flask:
         DATA_ROOT=ROOT,
         BOOKS_PER_PAGE=24,
         CHAPTERS_PER_PAGE=100,
-        CHAPTER_LOADER=None,
+        SESSION_COOKIE_SECURE=os.environ.get("READER_HTTPS") == "1",
+        TRUSTED_HOSTS=os.environ["READER_TRUSTED_HOSTS"].split(",") if os.environ.get("READER_TRUSTED_HOSTS") else None,
+        PERMANENT_SESSION_LIFETIME=timedelta(days=14),
+        MAX_CONTENT_LENGTH=128 * 1024,
+        TRUST_PROXY=os.environ.get("READER_TRUST_PROXY") == "1",
     )
     if config:
         app.config.update(config)
+    if app.config["TRUST_PROXY"]:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
     app.jinja_env.filters["safe_url"] = safe_url
 
     def db():
@@ -122,11 +89,34 @@ def create_app(config: dict | None = None) -> Flask:
         page = min(pages, max(1, request.args.get("page", 1, type=int)))
         return page, pages, (page - 1) * size
 
+    accounts.register(app, db)
+
+    @app.before_request
+    def verify_csrf():
+        if request.method == "POST" and request.endpoint is not None:
+            provided = request.form.get("csrf_token", "")
+            expected = session.get("csrf_token", "")
+            if not provided or not secrets.compare_digest(provided.encode(), expected.encode()):
+                abort(400, description="This page expired. Reload it and try again.")
+
+    @app.after_request
+    def response_headers(response):
+        if request.endpoint != "static":
+            response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.get("/health")
+    def health():
+        db().execute(select(Book.hidden).limit(1))
+        return {"ready": True}
+
     def get_book(book_id):
         book = db().scalar(select(Book).where(Book.id_book == book_id).options(
             joinedload(Book.author), joinedload(Book.site), selectinload(Book.tags),
         ))
-        if book is None:
+        if book is None or book.hidden:
             abort(404, description="This book is not in your library.")
         return book
 
@@ -134,22 +124,11 @@ def create_app(config: dict | None = None) -> Flask:
         chapter = db().scalar(select(Chapter).where(Chapter.id_chapter == chapter_id).options(
             joinedload(Chapter.book).joinedload(Book.site),
         ))
-        if chapter is None:
+        if chapter is None or chapter.hidden or chapter.book.hidden:
             abort(404, description="This chapter is not in your library.")
         return chapter
 
-    def download_site(chapter):
-        site = DOWNLOAD_SITES.get(chapter.book.site.name)
-        if site is not None and safe_url(chapter.url):
-            if urlsplit(chapter.url).netloc == urlsplit(site.url).netloc:
-                return site
-        return None
-
-    def is_cached(chapter):
-        root = Path(app.config["DATA_ROOT"])
-        return bool(cached_text(chapter.file_path, root) or cached_pages(chapter.file_path, root))
-
-    def chapter_view(chapter, *, error=None, status=200):
+    def chapter_view(chapter):
         root = Path(app.config["DATA_ROOT"])
         pages = cached_pages(chapter.file_path, root)
         text = cached_text(chapter.file_path, root)
@@ -162,61 +141,46 @@ def create_app(config: dict | None = None) -> Flask:
             paragraphs = []
         key = tuple_(Chapter.number, Chapter.id_chapter)
         current = tuple_(chapter.number, chapter.id_chapter)
-        siblings = select(Chapter).where(Chapter.id_book == chapter.id_book)
+        siblings = select(Chapter).where(Chapter.id_book == chapter.id_book, Chapter.hidden.is_(False))
         previous = db().scalar(siblings.where(key < current).order_by(
             Chapter.number.desc(), Chapter.id_chapter.desc()).limit(1))
         following = db().scalar(siblings.where(key > current).order_by(
             Chapter.number, Chapter.id_chapter).limit(1))
         chapter_position = db().scalar(select(func.count()).select_from(Chapter).where(
-            Chapter.id_book == chapter.id_book, key <= current,
+            Chapter.id_book == chapter.id_book, Chapter.hidden.is_(False), key <= current,
         ))
         list_page = (chapter_position - 1) // app.config["CHAPTERS_PER_PAGE"] + 1
-        supported = download_site(chapter) is not None
+        saved = db().get(ReadChapter, (g.user.id_user, chapter.id_chapter))
+        job = db().get(DownloadJob, chapter.id_chapter)
         return render_template("chapter.html", chapter=chapter, book=chapter.book,
                                paragraphs=paragraphs, pages=pages, previous=previous, following=following,
-                               list_page=list_page, supported=supported, error=error), status
+                               list_page=list_page, supported=download_site(chapter) is not None,
+                               saved=saved, view=reading.progress_view(chapter, len(pages or paragraphs)), job=job)
 
-    @app.get("/")
-    def library():
-        q = request.args.get("q", "").strip()[:200]
-        status = request.args.get("status", "")
-        filters = []
-        if q:
-            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            pattern = f"%{escaped}%"
-            filters.append(or_(
-                Book.title.ilike(pattern, escape="\\"),
-                Book.author.has(Author.nickname.ilike(pattern, escape="\\")),
-                Book.alt_titles.any(BookAltTitle.title.ilike(pattern, escape="\\")),
-            ))
-        if status in {item.value for item in BookStatus}:
-            filters.append(Book.status == BookStatus(status))
-        else:
-            status = ""
-        total = db().scalar(select(func.count()).select_from(Book).where(*filters))
-        page, pages, offset = pagination(total, app.config["BOOKS_PER_PAGE"])
-        books = db().scalars(select(Book).where(*filters).options(
-            joinedload(Book.author), joinedload(Book.site),
-        ).order_by(Book.id_book.desc()).limit(app.config["BOOKS_PER_PAGE"]).offset(offset)).all()
-        return render_template("library.html", books=books, total=total, page=page, pages=pages,
-                               q=q, status=status, statuses=BookStatus,
-                               total_books=db().scalar(select(func.count()).select_from(Book)),
-                               total_chapters=db().scalar(select(func.count()).select_from(Chapter)))
+    catalog.register(app, db, pagination)
+    reading.register(app, db, get_book, get_chapter)
+    admin.register(app, db, pagination, safe_url)
 
     @app.get("/books/<int:book_id>")
     def book_detail(book_id):
         book = get_book(book_id)
-        total = db().scalar(select(func.count()).select_from(Chapter).where(Chapter.id_book == book_id))
-        ready = db().scalar(select(func.count()).select_from(Chapter).where(
-            Chapter.id_book == book_id, Chapter.file_path.is_not(None),
-        ))
+        visible = (Chapter.id_book == book_id, Chapter.hidden.is_(False))
+        total = db().scalar(select(func.count()).select_from(Chapter).where(*visible))
+        ready = db().scalar(select(func.count()).select_from(Chapter).where(*visible, Chapter.file_path.is_not(None)))
         page, pages, offset = pagination(total, app.config["CHAPTERS_PER_PAGE"])
-        chapters = db().scalars(select(Chapter).where(Chapter.id_book == book_id).order_by(
-            Chapter.number, Chapter.id_chapter).limit(app.config["CHAPTERS_PER_PAGE"]).offset(offset)).all()
-        first = db().scalar(select(Chapter.id_chapter).where(Chapter.id_book == book_id).order_by(
-            Chapter.number, Chapter.id_chapter).limit(1))
-        return render_template("book.html", book=book, chapters=chapters, total=total,
-                               ready=ready, first=first, page=page, pages=pages)
+        chapters = db().execute(select(Chapter, DownloadJob).outerjoin(DownloadJob)
+                                .where(*visible).order_by(Chapter.number, Chapter.id_chapter)
+                                .limit(app.config["CHAPTERS_PER_PAGE"]).offset(offset)).all()
+        first = db().scalar(select(Chapter.id_chapter).where(*visible)
+                            .order_by(Chapter.number, Chapter.id_chapter).limit(1))
+        resume = db().scalar(select(ReadChapter.id_chapter).join(Chapter)
+                             .where(*visible, ReadChapter.id_user == g.user.id_user)
+                             .order_by(ReadChapter.read_at.desc()).limit(1))
+        follow = db().get(Followed, (g.user.id_user, book_id))
+        site = SOURCES.get(book.site.name)
+        return render_template("book.html", book=book, chapters=chapters, total=total, ready=ready,
+                               first=first, resume=resume, follow=follow, statuses=FollowedStatus,
+                               supported=site and site.supports_downloads, page=page, pages=pages)
 
     @app.get("/chapters/<int:chapter_id>")
     def read_chapter(chapter_id):
@@ -227,7 +191,7 @@ def create_app(config: dict | None = None) -> Flask:
         chapter = get_chapter(chapter_id)
         path = cache_path(chapter.file_path, Path(app.config["DATA_ROOT"]), ".cbz")
         mime = IMAGE_TYPES.get(Path(name).suffix.lower())
-        if path is None or mime is None:
+        if path is None or mime is None or '\\' in name or name in {'.', '..'}:
             abort(404)
         try:
             with ZipFile(path) as archive:
@@ -235,42 +199,13 @@ def create_app(config: dict | None = None) -> Flask:
         except (OSError, BadZipFile, KeyError, RuntimeError, NotImplementedError):
             abort(404)
 
-    @app.post("/chapters/<int:chapter_id>/load")
-    def load_chapter(chapter_id):
-        provided = request.form.get("csrf_token", "")
-        if not provided or not secrets.compare_digest(provided.encode(), session.get("csrf_token", "").encode()):
-            abort(400, description="This page expired. Reload the chapter page and try again.")
-        with LOAD_LOCK:
-            chapter = get_chapter(chapter_id)
-            if is_cached(chapter):
-                return redirect(url_for("read_chapter", chapter_id=chapter_id), code=303)
-            loader = app.config["CHAPTER_LOADER"]
-            if loader is None:
-                site = download_site(chapter)
-                if site is None:
-                    return chapter_view(chapter, error="Chapter downloads are not supported for this source yet.", status=422)
-                loader = lambda connection, item: site(connection).process_chapter(
-                    item.url, data_root=Path(app.config["DATA_ROOT"]),
-                )
-            try:
-                loaded = loader(db(), chapter)
-                if loaded and is_cached(chapter):
-                    db().commit()
-                    return redirect(url_for("read_chapter", chapter_id=chapter_id), code=303)
-                db().rollback()
-            except Exception as exc:
-                db().rollback()
-                logger.error("Cannot load chapter %d (%s)", chapter_id, type(exc).__name__)
-            return chapter_view(get_chapter(chapter_id),
-                                error="The chapter could not be loaded. Please try again in a moment.", status=502)
-
     @app.errorhandler(SQLAlchemyError)
     def database_error(error):
         logger.error("Library database request failed (%s)", type(error).__name__)
         return render_template("error.html", code=503,
                                message="The library database is unavailable. Check its connection and try again."), 503
 
-    for code in (400, 404, 503):
+    for code in (400, 403, 404, 413, 422, 503):
         def render_error(error):
             return render_template("error.html", code=error.code, message=error.description), error.code
         app.register_error_handler(code, render_error)

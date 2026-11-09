@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% set signing_up = mode == 'register' %}
+{% block title %}{{ 'Register' if signing_up else 'Sign in' }} · Reader{% endblock %}
+{% block content %}
+<section class="auth-panel panel">
+  <p class="eyebrow">READER</p><h1>{{ 'Create an account' if signing_up else 'Sign in' }}</h1>
+  {% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if not signing_up %}<input type="hidden" name="next" value="{{ target }}">{% endif %}
+    <label>Username <input name="username" autocomplete="username" required maxlength="50"></label>
+    <label>Password <input type="password" name="password" required maxlength="1024" autocomplete="{{ 'new-password' if signing_up else 'current-password' }}" {% if signing_up %}minlength="12"{% endif %}></label>
+    <button class="button" type="submit">{{ 'Register' if signing_up else 'Sign in' }}</button>
+  </form>
+  <p><a class="text-link" href="{{ url_for('login' if signing_up else 'signup') }}">{{ 'Already have an account? Sign in' if signing_up else 'New here? Create an account' }}</a></p>
+</section>
+{% endblock %}

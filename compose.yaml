@@ -1,0 +1,103 @@
+name: reader-deployment
+
+x-reader-environment: &reader-environment
+  DATABASE_URL: postgresql+psycopg://reader:${READER_DB_PASSWORD:?Set READER_DB_PASSWORD in .env.truenas}@db:5432/reader
+  READER_SECRET_KEY: ${READER_SECRET_KEY:?Set READER_SECRET_KEY in .env.truenas}
+  VPN_SUBSCRIPTION_URL: ${VPN_SUBSCRIPTION_URL:-}
+
+x-reader: &reader
+  image: reader-local:2
+  build: .
+  init: true
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reader
+      POSTGRES_DB: reader
+      POSTGRES_PASSWORD: ${READER_DB_PASSWORD:?Set READER_DB_PASSWORD in .env.truenas}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "reader", "-d", "reader"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - type: bind
+        source: ${READER_STORAGE_PATH:-/mnt/storage/reader}/postgres
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+
+  web:
+    <<: *reader
+    environment:
+      <<: *reader-environment
+      READER_HTTPS: "1"
+      READER_TRUST_PROXY: "1"
+      READER_TRUSTED_HOSTS: ${READER_BIND_IP:-192.168.88.125}
+      READER_WORKER_LOG: /app/worker-logs/worker.log
+      READER_LOADAVG: /host/loadavg
+      READER_MEMINFO: /host/meminfo
+    volumes:
+      - type: bind
+        source: ${READER_STORAGE_PATH:-/mnt/storage/reader}/chapters
+        target: /app/data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${READER_STORAGE_PATH:-/mnt/storage/reader}/runtime/logs
+        target: /app/worker-logs
+        read_only: true
+        bind:
+          create_host_path: false
+      - /proc/loadavg:/host/loadavg:ro
+      - /proc/meminfo:/host/meminfo:ro
+
+  worker:
+    <<: *reader
+    command: ["python", "main.py"]
+    environment:
+      <<: *reader-environment
+      LOG_FILE: /app/worker-logs/worker.log
+      READER_MIN_FREE_BYTES: ${READER_MIN_FREE_BYTES:-10737418240}
+    volumes:
+      - type: bind
+        source: ${READER_STORAGE_PATH:-/mnt/storage/reader}/chapters
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${READER_STORAGE_PATH:-/mnt/storage/reader}/runtime/logs
+        target: /app/worker-logs
+        bind:
+          create_host_path: false
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    environment:
+      READER_BIND_IP: ${READER_BIND_IP:-192.168.88.125}
+    ports:
+      - "${READER_BIND_IP:-192.168.88.125}:${READER_WEB_PORT:-8000}:8000"
+    volumes:
+      - type: bind
+        source: ./Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${READER_STORAGE_PATH:-/mnt/storage/reader}/runtime/caddy
+        target: /data
+        bind:
+          create_host_path: false

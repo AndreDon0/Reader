@@ -1,7 +1,7 @@
 import enum
 from datetime import date, datetime
 from uuid import UUID, uuid4
-from sqlalchemy import Column, ForeignKey, String, Date, Enum, Table, Index, Uuid, DateTime, func
+from sqlalchemy import BigInteger, Column, ForeignKey, String, Date, Enum, Table, Index, Uuid, DateTime, JSON, false, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -66,7 +66,7 @@ class BookType(enum.Enum):
 book_tag = Table(
     "book_tag",
     Base.metadata,
-    Column("id_book", ForeignKey("book.id_book"), primary_key=True),
+    Column("id_book", ForeignKey("book.id_book", ondelete="CASCADE"), primary_key=True),
     Column("id_tag", ForeignKey("tag.id_tag"), primary_key=True),
 )
 
@@ -88,7 +88,7 @@ class BookAltTitle(Base):
     id_alt_title: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column()
 
-    id_book: Mapped[int] = mapped_column(ForeignKey("book.id_book"))
+    id_book: Mapped[int] = mapped_column(ForeignKey("book.id_book", ondelete="CASCADE"))
     book: Mapped["Book"] = relationship(back_populates="alt_titles")
 
 
@@ -107,6 +107,9 @@ class Book(Base):
     chapters_count: Mapped[int] = mapped_column()
     published_on: Mapped[date | None] = mapped_column(Date)
     language: Mapped[str] = mapped_column(String(25))
+    hidden: Mapped[bool] = mapped_column(server_default=false())
+    edited_fields: Mapped[list[str]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    last_release_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     status: Mapped[BookStatus] = mapped_column(
         Enum(BookStatus, name="book_status"),
@@ -156,9 +159,16 @@ class Chapter(Base):
     published_on: Mapped[datetime | None] = mapped_column(DateTime)
     url: Mapped[str] = mapped_column(String(500), unique=True)
     file_path: Mapped[str | None] = mapped_column(String(1000), unique=True)
+    discovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    hidden: Mapped[bool] = mapped_column(server_default=false())
+    display_name: Mapped[str | None] = mapped_column()
 
-    id_book: Mapped[int] = mapped_column(ForeignKey("book.id_book"))
+    id_book: Mapped[int] = mapped_column(ForeignKey("book.id_book", ondelete="CASCADE"))
     book: Mapped["Book"] = relationship(back_populates="chapters")
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.name
 
 
 class User(Base):
@@ -171,6 +181,12 @@ class User(Base):
     )
     username: Mapped[str] = mapped_column(String(50), unique=True)
     password_hash: Mapped[str] = mapped_column(String())
+    is_admin: Mapped[bool] = mapped_column(server_default=false())
+    disabled: Mapped[bool] = mapped_column(server_default=false())
+    session_version: Mapped[int] = mapped_column(server_default="0")
+    primary_language: Mapped[str | None] = mapped_column(String(25))
+    secondary_languages: Mapped[list[str]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    book_types: Mapped[list[str]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
 
     followed: Mapped[list["Followed"]] = relationship(
         back_populates="user",
@@ -208,6 +224,10 @@ class Followed(Base):
         Enum(FollowedStatus, name="followed_status"),
         default=FollowedStatus.READING,
     )
+    followed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    watch_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    watch_after_id: Mapped[int | None] = mapped_column()
+    watch_after_number: Mapped[int | None] = mapped_column()
 
 
 class ReadChapter(Base):
@@ -227,6 +247,59 @@ class ReadChapter(Base):
         DateTime(timezone=True),
         server_default=func.now(),
     )
+    anchor: Mapped[int] = mapped_column(server_default="0")
+    anchor_offset: Mapped[float] = mapped_column(server_default="0")
+    finished: Mapped[bool] = mapped_column(server_default=false())
+    view_stamp: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    save_sequence: Mapped[int] = mapped_column(server_default="0")
+
+
+class AuthAttempt(Base):
+    __tablename__ = "auth_attempt"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    window: Mapped[int] = mapped_column(BigInteger)
+    count: Mapped[int] = mapped_column()
+
+
+class JobState:
+    QUEUED = "queued"
+    RUNNING = "running"
+    FAILED = "failed"
+    READY = "ready"
+
+
+class DownloadJob(Base):
+    __tablename__ = "download_job"
+
+    id_chapter: Mapped[int] = mapped_column(ForeignKey("chapter.id_chapter", ondelete="CASCADE"), primary_key=True)
+    state: Mapped[str] = mapped_column(String(10), server_default=JobState.QUEUED)
+    attempts: Mapped[int] = mapped_column(server_default="0")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ImportJob(Base):
+    __tablename__ = "import_job"
+
+    url: Mapped[str] = mapped_column(String(500), primary_key=True)
+    source: Mapped[str] = mapped_column(String(50))
+    state: Mapped[str] = mapped_column(String(10), server_default=JobState.QUEUED)
+    attempts: Mapped[int] = mapped_column(server_default="0")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    id_book: Mapped[int | None] = mapped_column(ForeignKey("book.id_book", ondelete="CASCADE"))
+
+
+class ImportRequest(Base):
+    __tablename__ = "import_request"
+
+    url: Mapped[str] = mapped_column(ForeignKey("import_job.url", ondelete="CASCADE"), primary_key=True)
+    id_user: Mapped[UUID] = mapped_column(ForeignKey("users.id_user", ondelete="CASCADE"), primary_key=True)
+
+
+class CacheRemoval(Base):
+    __tablename__ = "cache_removal"
+
+    path: Mapped[str] = mapped_column(String(1000), primary_key=True)
 
 
 
@@ -241,5 +314,13 @@ Index("ix_book_tag_tag_book", book_tag.c.id_tag, book_tag.c.id_book)
 
 Index("ix_followed_book", Followed.id_book)
 Index("ix_read_chapter_chapter", ReadChapter.id_chapter)
+Index("ix_book_catalog_release", Book.last_release_at, Book.id_book)
+Index("ix_chapter_book_discovered", Chapter.id_book, Chapter.discovered_at)
+Index("ix_read_user_time", ReadChapter.id_user, ReadChapter.read_at)
+Index("ix_followed_watch", Followed.id_book, postgresql_where=Followed.watch_since.is_not(None))
+Index("ix_download_due", DownloadJob.state, DownloadJob.available_at)
+Index("ix_import_due", ImportJob.source, ImportJob.state, ImportJob.available_at)
+Index("ix_import_request_user", ImportRequest.id_user)
+Index("ix_auth_attempt_window", AuthAttempt.window)
 
 Index("ix_site_check_site_time", SiteCheck.id_site, SiteCheck.checked_at)

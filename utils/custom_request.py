@@ -330,11 +330,13 @@ def request(
     *,
     subscription_url: str | None = None,
     xray_path: str | None = None,
+    direct: bool = False,
     timeout: float | tuple[float, float] = 30,
     **kwargs,
 ) -> requests.Response | None:
     """Fetch a URL through the VPN pool, then directly if every server fails.
 
+    Set direct=True to bypass both the VPN pool and environment proxies.
     Without a subscription, use a normal requests.request call. To use a VPN,
     install Xray (`brew install xray` on macOS) and supply the subscription using
     VPN_SUBSCRIPTION_URL or subscription_url; optionally set XRAY_PATH.
@@ -358,6 +360,10 @@ def request(
             logger.info("HTTP status: %s", response.status_code)
     """
     try:
+        if direct:
+            if "proxies" in kwargs:
+                raise ValueError("Direct requests cannot specify a proxy")
+            return _request_direct(method, url, timeout, **kwargs)
         load_dotenv()
         subscription_url = subscription_url or os.environ.get("VPN_SUBSCRIPTION_URL")
         if not subscription_url:
@@ -391,8 +397,12 @@ def _request_with_vpn(url, method, subscription_url, xray_path, timeout, **kwarg
             return response
         logger.error("No working VPN routes remain; trying direct connection")
 
+    return _request_direct(method, url, timeout, **kwargs)
+
+
+def _request_direct(method, url, timeout, **kwargs):
     with requests.Session() as session:
-        # A direct fallback must not reuse HTTP_PROXY/HTTPS_PROXY/ALL_PROXY.
+        # Do not reuse HTTP_PROXY/HTTPS_PROXY/ALL_PROXY.
         session.trust_env = False
         return session.request(method, url, timeout=timeout, **kwargs)
 

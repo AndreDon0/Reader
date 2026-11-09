@@ -12,6 +12,7 @@ wheels/
 
 # Credentials
 .env
+.env.truenas
 
 # Runtime logs
 logs/

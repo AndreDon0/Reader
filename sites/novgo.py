@@ -1,26 +1,86 @@
 import logging
 import re
-from urllib.parse import urljoin
+from bisect import bisect_right
+from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
+from time import monotonic
+from urllib.parse import urljoin, urlsplit
+from xml.etree import ElementTree
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models import Author, Book, BookStatus, BookType, Chapter, Tag
-from sites.base_site import BaseSite
-from utils.custom_request import request_soup
+from sites.base_site import BaseSite, SearchResult, SourceSearchUnavailable
+from utils.custom_request import request, request_soup
 
 logger = logging.getLogger(__name__)
+
+
+def _sitemap(url: str) -> ElementTree.Element:
+    response = request(url, timeout=10)
+    if response is None:
+        raise RuntimeError("NOVGO sitemap request failed")
+    with response:
+        response.raise_for_status()
+        return ElementTree.fromstring(response.content)
+
+
+@lru_cache(maxsize=1)
+def _catalog_urls(site_url: str, _hour: int) -> tuple[str, ...]:
+    # Cache successful sitemap reads within the hour. The index points to
+    # versioned files, so discover their names instead of hardcoding them.
+    origin = urlsplit(site_url)
+    index = _sitemap(urljoin(site_url, "sitemap.xml"))
+    urls = set()
+    for loc in index.findall("./{*}sitemap/{*}loc"):
+        parsed = urlsplit(loc.text or "")
+        if (parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc):
+            continue
+        if not re.fullmatch(r"/sitemaps/novel-[^/]+\.xml", parsed.path):
+            continue
+        for entry in _sitemap(loc.text).findall("./{*}url/{*}loc"):
+            title = urlsplit(entry.text or "")
+            if ((title.scheme, title.netloc) == (origin.scheme, origin.netloc)
+                    and re.fullmatch(r"/[^/]+\.html", title.path)):
+                urls.add(urljoin(site_url, title.path))
+    if not urls:
+        raise ValueError("No novel URLs in the NOVGO sitemap")
+    return tuple(sorted(urls))
+
 
 class Novgo(BaseSite):
     name = "NOVGO"
     url = "https://novgo.net/"
     language = "english"
+    catalog_batches_per_cycle = 3
+    supports_downloads = True
+    search_type = BookType.NOVEL
+    title_path = re.compile(r"/[^/]+\.html/?")
 
 
     def __init__(self, session: Session) -> None:
         super().__init__(session)
 
+    def process_catalog(self, cursor: str | None = None) -> str | None:
+        urls = _catalog_urls(self.url, int(monotonic() // 3600))
+        saved = set(self.session.scalars(select(Book.url).where(Book.site == self.site)))
+        start = bisect_right(urls, cursor) if cursor is not None else 0
+        book_url = next((urls[i] for i in range(start, len(urls)) if urls[i] not in saved), None)
+        if book_url is None:
+            return None
+
+        # Leave a failed title eligible for the next sweep, but let this
+        # sweep move on to the rest of the sitemap.
+        try:
+            with self.session.begin_nested() as transaction:
+                if not self._process_book(book_url):
+                    transaction.rollback()
+                    logger.warning("NOVGO catalog title incomplete: %s", book_url)
+        except Exception:
+            logger.exception("Cannot import NOVGO catalog title %s; book changes rolled back", book_url)
+        return book_url if book_url != urls[-1] else None
 
     def new(self) -> list[str]:
         soup = request_soup(self.url, timeout=10)
@@ -42,27 +102,24 @@ class Novgo(BaseSite):
         return new
 
 
-    def search(self, title: str) -> list[str]:
+    @classmethod
+    def search(cls, title: str) -> list[SearchResult]:
         soup = request_soup(
-            urljoin(self.url, "search"),
-            params={"keyword": title}, timeout=10
+            urljoin(cls.url, "search"),
+            params={"keyword": title}, timeout=4,
         )
         if soup is None:
-            return []
-
-        found_list = soup.select_one(".ul-list1 .ul-list1-2 .ss-custom .rank-list .fwn-rank-list")
-        if found_list is None:
-            logger.warning("Search results list missing on %s", self.name)
-            return []
+            raise SourceSearchUnavailable
 
         found = []
-        for link in found_list.select(".tit a"):
-            if not link.get("href"):
-                logger.warning("Skipping search result without href on %s", self.name)
-                continue
-            found.append(urljoin(self.url, link["href"]))
-
-        return found
+        for link in soup.select(".fwn-rank-list .tit a"):
+            url = cls.canonical_title_url(link.get("href", ""))
+            name = link.get_text(" ", strip=True)
+            if url and name:
+                found.append(SearchResult(name, url, cls.search_type))
+        if found or (soup.title and soup.title.get_text(strip=True).startswith("Search:")):
+            return found
+        raise SourceSearchUnavailable
 
 
     def process_book(self, book_url: str) -> bool:
@@ -241,10 +298,13 @@ class Novgo(BaseSite):
                         if chapter_url in saved_urls or chapter_url in page_urls:
                             continue
 
-                        chapter = Chapter(number=number, url=chapter_url, name=name, book=book)
+                        chapter = Chapter(number=number, url=chapter_url, name=name, book=book,
+                                          discovered_at=datetime.now(UTC))
                         self.session.add(chapter)
                         page_urls.add(chapter_url)
                 saved_urls.update(page_urls)
+                if page_urls:
+                    book.last_release_at = datetime.now(UTC)
                 logger.debug("Saved %d chapter links from page %d for %s", len(page_urls), page, book_url)
             except Exception:
                 logger.exception("Cannot save chapter page %d for %s; page rolled back", page, book_url)

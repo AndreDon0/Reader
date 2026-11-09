@@ -18,3 +18,8 @@ dependencies = [
     "sqlalchemy-utils>=0.43.0",
     "tqdm>=4.70.1",
 ]
+
+[dependency-groups]
+deploy = [
+    "gunicorn>=23",
+]

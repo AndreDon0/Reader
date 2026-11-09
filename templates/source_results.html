@@ -1,0 +1,13 @@
+{% if busy %}<p class="muted">Source busy. <button class="text-link nav-button" type="button" data-retry-source>Try again</button></p>
+{% elif unavailable %}<p class="muted">Source unavailable. <button class="text-link nav-button" type="button" data-retry-source>Try again</button></p>
+{% elif results %}
+<ul class="link-list">{% for url, title, book in results %}
+  <li data-result-url="{{ url }}">
+    {% if book %}<a href="{{ url_for('book_detail', book_id=book.id_book) }}">{{ book.title }}</a><small>In Reader</small>
+    {% else %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ title }}</a>
+      <div class="action-row"><a class="text-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">Open original ↗</a>
+      <form method="post" action="{{ url_for('request_import') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="source" value="{{ source }}"><input type="hidden" name="url" value="{{ url }}"><button class="text-link nav-button" type="submit">Add to my library</button></form></div>
+    {% endif %}
+  </li>
+{% endfor %}</ul>
+{% else %}<p class="muted">No matching titles.</p>{% endif %}

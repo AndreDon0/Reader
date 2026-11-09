@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from base64 import b64decode
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import urljoin, urlsplit
@@ -10,7 +11,7 @@ from zipfile import ZipFile
 from sqlalchemy import select
 
 from models import Author, Book, BookStatus, Chapter, Tag
-from sites.base_site import BaseSite
+from sites.base_site import BaseSite, SearchResult, SourceSearchUnavailable
 from utils.cbz import image_suffix
 from utils.custom_request import request, request_soup
 
@@ -37,6 +38,32 @@ class Manhuazhan(BaseSite):
     name = "Manhuazhan"
     url = "https://www.manhuazhan.com/"
     language = "chinese"
+    supports_downloads = True
+    title_path = BOOK_PATH
+
+    @classmethod
+    def search(cls, title: str) -> list[SearchResult]:
+        endpoint = urljoin(cls.url, "search")
+        soup = request_soup(endpoint, method="POST", data={"key": title},
+                            headers={"Referer": cls.url}, timeout=4)
+        if soup is None or "安全验证" in (soup.title.get_text() if soup.title else ""):
+            raise SourceSearchUnavailable
+        response_url = urlsplit(getattr(soup, "source_url", endpoint))
+        if response_url.netloc != urlsplit(cls.url).netloc or not response_url.path.startswith("/search"):
+            raise SourceSearchUnavailable
+        # Result cards link to /comic/<id>. Exclude navigation and recommendation links.
+        region = soup.select_one(".fed-list-info, .comic-list, .search-results, .d-vod-list, .d-search-list")
+        if region is None:
+            if re.search(r"共\s*0\s*条|未找到|没有找到|暂无搜索结果", soup.get_text(" ", strip=True)):
+                return []
+            raise SourceSearchUnavailable
+        found = {}
+        for link in region.select("a[href]"):
+            url = cls.canonical_title_url(link["href"])
+            name = link.get("title") or link.get_text(" ", strip=True)
+            if url and name:
+                found.setdefault(url, SearchResult(name, url))
+        return list(found.values())
 
     @classmethod
     def _site_path(cls, href: str, pattern: re.Pattern[str]) -> re.Match[str] | None:
@@ -121,23 +148,24 @@ class Manhuazhan(BaseSite):
         book = self.session.scalar(select(Book).where(Book.url == book_url))
         if book is None:
             book = Book(url=book_url, language=self.language)
-        book.title = title.get_text(strip=True)
-        book.cover_url = urljoin(book_url, cover.get("data-original") or cover["src"])
-        book.description = description.get_text("\n", strip=True) if description else ""
-        book.status = {
+        status = {
             "连载": BookStatus.ONGOING,
             "连载中": BookStatus.ONGOING,
             "完结": BookStatus.COMPLETED,
             "已完结": BookStatus.COMPLETED,
         }.get(field("状态"), BookStatus.UNKNOWN)
+        self.update_metadata(book, title=title.get_text(strip=True),
+                             cover_url=urljoin(book_url, cover.get("data-original") or cover["src"]),
+                             description=description.get_text("\n", strip=True) if description else "",
+                             status=status)
 
         nickname = field("作者")
-        if nickname and len(nickname) <= 50:
+        if nickname and len(nickname) <= 50 and "author" not in (book.edited_fields or ()):
             book.author = (
                 self.session.scalar(select(Author).where(Author.nickname == nickname))
                 or Author(nickname=nickname)
             )
-        if tag_row := metadata.get("类型"):
+        if (tag_row := metadata.get("类型")) and "tags" not in (book.edited_fields or ()):
             names = dict.fromkeys(tag.get_text(strip=True) for tag in tag_row.select("a"))
             book.tags = [
                 self.session.scalar(select(Tag).where(Tag.name == name)) or Tag(name=name)
@@ -155,7 +183,10 @@ class Manhuazhan(BaseSite):
                 if complete_list:
                     saved[url].number = number
             else:
-                book.chapters.append(Chapter(url=url, name=name, number=number if complete_list else next_number))
+                discovered_at = datetime.now(UTC)
+                book.chapters.append(Chapter(url=url, name=name, number=number if complete_list else next_number,
+                                             discovered_at=discovered_at))
+                book.last_release_at = discovered_at
                 next_number += 1
         book.chapters_count = len(book.chapters)
         if book.id_book is None:

@@ -3,6 +3,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import patch
 from zipfile import ZipFile
 
@@ -12,8 +13,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 import main
-from models import Base, Book, BookStatus, Chapter
+from models import Base, Book, BookStatus, Chapter, User
 from sites.manhuazhan import Manhuazhan
+from utils.jobs import run_download
 from web import create_app
 
 BOOK_URL = Manhuazhan.url + "comic/42"
@@ -64,6 +66,7 @@ class ManhuazhanTests(unittest.TestCase):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
+        (self.root / "data").mkdir()
         self.html = self.enterContext(patch("sites.manhuazhan.request_soup"))
         self.images = self.enterContext(patch("sites.manhuazhan.request"))
 
@@ -100,18 +103,16 @@ class ManhuazhanTests(unittest.TestCase):
 
     def test_worker_defers_unavailable_book_and_imports_it_when_it_recovers(self):
         self.html.return_value = soup("Comic does not exist.", Manhuazhan.url + "err/comic")
-        self.enterContext(patch.object(main, "initialize_database", return_value=True))
         self.enterContext(patch.object(main, "SessionLocal", self.factory))
-        self.enterContext(patch.object(main, "SITE_CLASSES", (Manhuazhan,)))
-        self.enterContext(patch.object(main, "check_vpn_pool"))
         self.enterContext(patch.object(Manhuazhan, "is_up", return_value=True))
         self.enterContext(patch.object(Manhuazhan, "new", return_value=[BOOK_URL]))
         clock = self.enterContext(patch.object(main.time, "monotonic", return_value=100))
-        unavailable_until = {}
+        state = main.SiteState()
+        stop = Event()
 
         with self.assertLogs(main.logger, level="INFO") as logs:
-            main.run_once(unavailable_until)
-            main.run_once(unavailable_until)
+            main.run_site_once(Manhuazhan, state, stop)
+            main.run_site_once(Manhuazhan, state, stop)
         self.assertIn("unavailable", "\n".join(logs.output))
         self.assertNotIn("Processing incomplete", "\n".join(logs.output))
         self.html.assert_called_once_with(BOOK_URL, timeout=10)
@@ -120,7 +121,7 @@ class ManhuazhanTests(unittest.TestCase):
 
         self.html.return_value = book_page('<a href="/chapter/42-101.html">第一话</a>')
         clock.return_value += main.UNAVAILABLE_RETRY_SECONDS
-        main.run_once(unavailable_until)
+        main.run_site_once(Manhuazhan, state, stop)
         self.assertEqual(self.html.call_count, 2)
         with self.factory() as db:
             self.assertEqual(db.scalar(select(Book.url)), BOOK_URL)
@@ -137,10 +138,19 @@ class ManhuazhanTests(unittest.TestCase):
         self.images.side_effect = [image_response(PAGE_BYTES[0]), None, image_response(PAGE_BYTES[1])]
         app = create_app({"TESTING": True, "SESSION_FACTORY": self.factory, "DATA_ROOT": self.root})
         client = app.test_client()
+        with self.factory.begin() as db:
+            user = User(username="reader", password_hash="unused")
+            db.add(user)
+            db.flush()
+            user_id = user.id_user
+        with client.session_transaction() as session:
+            session.update(user=str(user_id), session_version=0)
         url = f"/chapters/{chapter_id}"
         page = BeautifulSoup(client.get(url).data, "lxml")
         token = page.select_one("[name=csrf_token]")["value"]
         self.assertEqual(client.post(url + "/load", data={"csrf_token": token}).status_code, 303)
+        with patch.dict("os.environ", {"READER_MIN_FREE_BYTES": "0"}):
+            self.assertTrue(run_download(self.factory, self.root))
         self.assertEqual([call.args[0] for call in self.images.call_args_list], [PAGE_URLS[0], PAGE_URLS[1], PAGE_URLS[1]])
         self.assertEqual(self.images.call_args.kwargs["headers"]["Referer"], CHAPTER_URL)
         with self.factory() as db:
