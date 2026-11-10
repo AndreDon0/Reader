@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterator
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from models import Site, Language
 
 from utils.custom_request import request
@@ -15,14 +15,18 @@ class BaseSite:
     url = ""
     language = Language.ENGLISH
 
-    def __init__(self, session: Session) -> None:
-        self.session = session
-        self.site = get_or_create(
-            session,
-            Site,
-            defaults={"name":self.name},
-            url=self.url
-        )
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self.session_factory = session_factory
+
+        with self.session_factory.begin() as session:
+            site = get_or_create(
+                session,
+                Site,
+                defaults={"name": self.name},
+                url=self.url,
+            )
+
+            self.id_site = site.id_site
 
     def is_up(self) -> bool:
         return request(self.url, timeout=10).status_code == 200

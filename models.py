@@ -1,8 +1,20 @@
 import enum
 from datetime import date, datetime
 from uuid import UUID, uuid4
-from sqlalchemy import BigInteger, Column, ForeignKey, String, Date, Enum, Table, Index, Uuid, DateTime, JSON, false, func, text, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, String, Date, Enum, Table, Index, Uuid, DateTime, JSON, false, func, text, UniqueConstraint, TypeDecorator
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class TruncatedString(TypeDecorator):
+    impl = String
+    cache_ok = True
+
+    def __init__(self, length):
+        self.max_length = length
+        super().__init__(length=length)
+
+    def process_bind_param(self, value, dialect):
+        return value[:self.max_length] if value is not None else None
 
 
 class Base(DeclarativeBase):
@@ -43,7 +55,7 @@ class Author(Base):
     __tablename__ = "author"
 
     id_author: Mapped[int] = mapped_column(primary_key=True)
-    nickname: Mapped[str] = mapped_column(String(50), unique=True)
+    nickname: Mapped[str] = mapped_column(TruncatedString(50), unique=True)
 
     books: Mapped[list["Book"]] = relationship(back_populates="author")
 
@@ -99,7 +111,7 @@ class Tag(Base):
     __tablename__ = "tag"
 
     id_tag: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(20), unique=True)
+    name: Mapped[str] = mapped_column(TruncatedString(20), unique=True)
 
     books: Mapped[list["Book"]] = relationship(
         secondary=book_tag,
@@ -120,7 +132,7 @@ class Book(Base):
     __tablename__ = "book"
 
     id_book: Mapped[int] = mapped_column(primary_key=True)
-    title: Mapped[str] = mapped_column(String(1000))
+    title: Mapped[str] = mapped_column()
     description: Mapped[str] = mapped_column()
     rating: Mapped[float | None] = mapped_column()
     rated: Mapped[int | None] = mapped_column()
@@ -142,8 +154,8 @@ class Book(Base):
         default=BookType.UNKNOWN,
     )
 
-    url: Mapped[str] = mapped_column(String(500), unique=True)
-    cover_url: Mapped[str] = mapped_column(String(500))
+    url: Mapped[str] = mapped_column(unique=True)
+    cover_url: Mapped[str] = mapped_column()
 
     id_site: Mapped[int] = mapped_column(ForeignKey("site.id_site", ondelete="CASCADE"))
     site: Mapped["Site"] = relationship(back_populates="books")
@@ -176,7 +188,7 @@ class Chapter(Base):
     __tablename__ = "chapter"
 
     id_chapter: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(500))
+    name: Mapped[str] = mapped_column()
     number: Mapped[int] = mapped_column()
     published_on: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
@@ -185,7 +197,7 @@ class Chapter(Base):
         DateTime(timezone=True),
         server_default=func.now(),
     )
-    url: Mapped[str] = mapped_column(String(500), unique=True)
+    url: Mapped[str] = mapped_column(unique=True)
     file_path: Mapped[str | None] = mapped_column(String(100), unique=True)
 
     id_book: Mapped[int] = mapped_column(ForeignKey("book.id_book", ondelete="CASCADE"))

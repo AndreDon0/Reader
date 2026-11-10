@@ -13,7 +13,7 @@ from models import Base
 config = context.config
 config.set_main_option(
     "sqlalchemy.url",
-    DATABASE_URL.replace("%", "%%"),
+    DATABASE_URL.render_as_string(hide_password=False).replace("%", "%%"),
 )
 
 # Interpret the config file for Python logging.

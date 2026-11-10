@@ -1,8 +1,9 @@
+from functools import wraps
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from models import Base
-
 
 def get_or_create(
     session: Session,
@@ -20,3 +21,14 @@ def get_or_create(
         session.flush()
 
     return instance
+
+
+from functools import wraps
+
+def transactional(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        with self.session_factory.begin() as session:
+            return func(self, *args, session=session, **kwargs)
+
+    return wrapper
