@@ -1,8 +1,7 @@
 import logging
-from collections.abc import Iterator
 
 from sqlalchemy.orm import Session, sessionmaker
-from models import Site, Language
+from models import Site, Language, SiteCheck
 
 from utils.custom_request import request
 from utils.db import get_or_create
@@ -29,8 +28,19 @@ class BaseSite:
             self.id_site = site.id_site
 
     def is_up(self) -> bool:
-        return request(self.url, timeout=10).status_code == 200
+        up = request(self.url, timeout=10).status_code == 200
 
+        with self.session_factory.begin() as session:
+            site = get_or_create(
+                session,
+                SiteCheck,
+                defaults={"is_up": up},
+                id_site=self.id_site,
+            )
+
+            self.id_site = site.id_site
+        return up
+    
     # Get new titles
     def new(self) -> list[str]:
         logger.warning("New is not implemented for %s", self.name)
