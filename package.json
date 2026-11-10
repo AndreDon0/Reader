@@ -1,0 +1,24 @@
+{
+  "name": "reader",
+  "version": "1.0.0",
+  "description": "Project for learning how to read different languages.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndreDon0/Reader.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/AndreDon0/Reader/issues"
+  },
+  "homepage": "https://github.com/AndreDon0/Reader#readme",
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.5",
+    "tailwindcss": "^4.3.5"
+  }
+}

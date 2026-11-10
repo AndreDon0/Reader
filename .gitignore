@@ -9,10 +9,12 @@ wheels/
 
 # Virtual environments
 .venv
+node_modules
 
 # Credentials
 .env
 
-# Runtime logs
+# Local folders and projects
+playground.ipynb
 logs/
 tmp/
