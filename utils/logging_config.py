@@ -62,3 +62,12 @@ def configure_logging():
             ))
         except OSError:
             logging.exception("Cannot open log file")
+
+
+def check_none(value, name: str, level=logging.WARNING):
+    if value is None:
+        if level==logging.WARNING:
+            logging.warning(f"None is assigned to {name}")
+        else:
+            logging.error(f"Cannot assign None to {name}")
+    return value

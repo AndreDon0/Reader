@@ -1,5 +1,4 @@
 import logging
-import re
 from collections.abc import Iterator
 
 from sqlalchemy.orm import Session
@@ -21,8 +20,8 @@ class BaseSite:
         self.site = get_or_create(
             session,
             Site,
-            url=self.url,
-            defaults={"name":self.name}
+            defaults={"name":self.name},
+            url=self.url
         )
 
     def is_up(self) -> bool:
@@ -38,8 +37,12 @@ class BaseSite:
         logger.warning("Search is not implemented for %s", self.name)
         return []
 
+    def catalog(self) -> list[str]:
+        logger.warning("Catalog is not implemented for %s", self.name)
+        return []
+
     # Process catalog of site
-    def process_catalog(self) -> Iterator[list[str]]:
+    def process_catalog(self) -> None:
         logger.warning("Catalog processing is not implemented for %s", self.name)
 
     # Process book by url

@@ -434,23 +434,19 @@ def check_vpn_pool(
         return 0
 
 
-def request_soup(url: str, *args, **kwargs) -> BeautifulSoup | None:
+def request_soup(url: str, *args, **kwargs) -> BeautifulSoup:
     """Return parsed HTML, or None after logging a request/status/parse failure."""
     response = request(url, *args, **kwargs)
     if response is None:
-        logger.warning("Responce for %s in None", url)
-        return None
+        logger.error("Responce for %s in None", url)
+        return BeautifulSoup("", "lxml")
     try:
         response.raise_for_status()
         soup = BeautifulSoup(response.content, "lxml")
-        # Retain the final URL so relative covers/links follow redirects.
         soup.source_url = response.url
         return soup
-    except requests.HTTPError:
-        logger.warning("Cannot parse page: HTTP %s", response.status_code)
-        return None
     except Exception as exc:
         logger.error("Cannot parse page (%s)", type(exc).__name__)
-        return None
+        return BeautifulSoup("", "lxml")
     finally:
         response.close()

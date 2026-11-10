@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 import os
 from sqlalchemy.engine import URL
+from pathlib import Path
 
 load_dotenv()
 POSTGRES_PASSWORD = os.environ["POSTGRES_PASSWORD"]
@@ -15,4 +16,4 @@ DATABASE_URL = URL.create(
     database="reader",
 )
 
-FILES_PATH = "/srv/storage/reader/files"
+FILES_PATH = Path("/srv/storage/reader/files")
