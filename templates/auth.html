@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Create an account' if registering else 'Sign in' }} · Reader{% endblock %}
+{% block content %}
+{% set field = 'mt-1 block w-full rounded-lg border border-[#d9e6e0] bg-white px-3 py-2.5 text-sm focus-visible:outline-2 focus-visible:outline-teal-700' %}
+<section aria-labelledby="auth-title" class="mx-auto max-w-md rounded-2xl border border-[#d9e6e0] bg-white p-6 sm:mt-5 sm:p-8">
+    <h1 id="auth-title" class="font-[family-name:var(--font-reader-display)] text-[42px] leading-tight">{{ 'Create an account' if registering else 'Sign in' }}</h1>
+    {% if notice %}
+        <p role="status" class="mt-4 rounded-lg border border-teal-100 bg-teal-50 px-3 py-2.5 text-sm text-teal-900">{{ notice }}</p>
+    {% endif %}
+    {% if error %}
+        <p role="alert" class="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-900">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="{{ '/register' if registering else '/login' }}" class="mt-5 space-y-4">
+        <input type="hidden" name="next" value="{{ target }}">
+        <label class="block text-sm font-semibold">Username
+            <input name="username" value="{{ username|default('') }}" autocomplete="username" maxlength="50"
+                   {% if registering %}minlength="3"{% endif %} required class="{{ field }}">
+        </label>
+        <label class="block text-sm font-semibold">Password
+            <input type="password" name="password" autocomplete="{{ 'new-password' if registering else 'current-password' }}" maxlength="256"
+                   {% if registering %}minlength="8" aria-describedby="password-length"{% endif %} required class="{{ field }}">
+        </label>
+        {% if registering %}
+            <p id="password-length" class="-mt-2 text-xs text-[#4d6661]">Use at least 8 characters.</p>
+            <label class="block text-sm font-semibold">Confirm password
+                <input type="password" name="confirm_password" autocomplete="new-password" maxlength="256" required class="{{ field }}">
+            </label>
+        {% endif %}
+        <button class="w-full cursor-pointer rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700">
+            {{ 'Create account' if registering else 'Sign in' }}
+        </button>
+    </form>
+    <p class="mt-5 text-center text-sm text-[#4d6661]">
+        {% if registering %}
+            Already have an account? <a href="/login?next={{ target|urlencode }}" class="font-semibold text-teal-800 hover:underline">Sign in</a>
+        {% else %}
+            New to Reader? <a href="/register?next={{ target|urlencode }}" class="font-semibold text-teal-800 hover:underline">Create an account</a>
+        {% endif %}
+    </p>
+</section>
+{% endblock %}

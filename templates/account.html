@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% from "icons.html" import icon %}
+{% block title %}Account · Reader{% endblock %}
+{% block content %}
+<div class="max-w-3xl">
+    {% if notice %}
+        <p role="status" class="mb-4 rounded-xl border border-teal-100 bg-teal-50 px-4 py-3 text-sm font-medium text-teal-900">{{ notice }}</p>
+    {% endif %}
+    {% if error %}
+        <p role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-900">{{ error }}</p>
+    {% endif %}
+    <section aria-labelledby="account-name" class="rounded-2xl border border-[#d9e6e0] bg-white">
+        <div class="flex flex-col items-start justify-between gap-x-6 gap-y-4 p-5 sm:flex-row sm:p-7">
+            <div class="flex min-w-0 flex-1 items-start gap-4">
+                <span class="grid size-14 shrink-0 place-items-center rounded-full bg-teal-100 text-teal-800">{{ icon("account", 28) }}</span>
+                <div class="min-w-0">
+                    <h1 id="account-name" class="text-xl leading-tight font-semibold wrap-break-word">{{ user.username if user else 'Guest' }}</h1>
+                    {% if user %}
+                        {% set field = 'mt-1 block w-full rounded-lg border border-[#d9e6e0] bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-teal-700' %}
+                        <details class="mt-2" {% if failed_action == 'password' %}open{% endif %}>
+                            <summary class="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-full border border-[#d9e6e0] px-3 py-1.5 text-xs font-semibold hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700 [&::-webkit-details-marker]:hidden">
+                                Change password {{ icon("chevron", 13) }}
+                            </summary>
+                            <form action="/account/password" method="post" class="mt-3 max-w-xs space-y-3 text-sm">
+                                <label class="block font-medium">Current password
+                                    <input type="password" name="current_password" autocomplete="current-password" maxlength="256" required class="{{ field }}">
+                                </label>
+                                <label class="block font-medium">New password
+                                    <input type="password" name="new_password" autocomplete="new-password" minlength="8" maxlength="256" required class="{{ field }}">
+                                </label>
+                                <button class="cursor-pointer rounded-lg bg-teal-700 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700">Update password</button>
+                            </form>
+                        </details>
+                    {% else %}
+                        <a href="/login" class="mt-1 inline-block text-sm font-semibold text-teal-800 hover:underline">Sign in to Reader</a>
+                    {% endif %}
+                </div>
+            </div>
+            {% if user %}
+                <dl class="flex shrink-0 divide-x divide-[#d9e6e0] rounded-xl border border-[#d9e6e0] bg-[#f7faf8] text-center">
+                    {% for number, label in ((books, 'Books read'), (chapters, 'Chapters read')) %}
+                        <div class="flex min-w-22 flex-col-reverse px-3 py-2 sm:px-4">
+                            <dt class="text-xs font-medium text-[#4d6661]">{{ label }}</dt>
+                            <dd class="text-lg font-semibold text-teal-900 tabular-nums">{{ number }}</dd>
+                        </div>
+                    {% endfor %}
+                </dl>
+            {% endif %}
+        </div>
+
+        {% if user %}
+            <form id="language-preferences" action="/account/languages" method="post" class="space-y-4 border-t border-[#d9e6e0] p-5 sm:p-7">
+                <div class="grid gap-2 sm:grid-cols-[10rem_1fr] sm:items-center">
+                    <label for="primary-language" class="text-sm font-semibold">Primary language</label>
+                    <select id="primary-language" name="primary" required class="w-fit min-w-40 cursor-pointer rounded-lg border border-[#d9e6e0] bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-teal-700">
+                        {% for language in languages %}
+                            <option value="{{ language.value }}" {% if language == primary %}selected{% endif %}>{{ language.name.title() }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="grid gap-2 sm:grid-cols-[10rem_1fr] sm:items-start">
+                    <span id="secondary-label" class="pt-1.5 text-sm font-semibold">Secondary languages</span>
+                    <div>
+                        <div class="flex flex-wrap items-center gap-2" role="group" aria-labelledby="secondary-label">
+                            <div id="secondary-chips" class="contents"></div>
+                            <template id="secondary-chip">
+                                <button type="button" class="flex cursor-pointer items-center gap-1.5 rounded-full bg-teal-100 px-2.5 py-1 text-sm font-medium text-teal-950 hover:bg-teal-200 focus-visible:outline-2 focus-visible:outline-teal-700">
+                                    <span></span><span aria-hidden="true">&times;</span>
+                                </button>
+                            </template>
+                            <details data-popup class="relative z-10">
+                                <summary class="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-full border border-[#d9e6e0] px-2.5 py-1 text-sm font-medium text-teal-800 hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700 [&::-webkit-details-marker]:hidden">
+                                    <span aria-hidden="true">+</span> Add language
+                                </summary>
+                                <div class="absolute top-full left-0 mt-1 grid w-38 max-w-[85vw] rounded-xl border border-[#d9e6e0] bg-white p-1 shadow-lg">
+                                    {% for language in languages %}
+                                        <label class="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm hover:bg-teal-50 has-disabled:cursor-default has-disabled:opacity-45">
+                                            <input type="checkbox" name="secondary" value="{{ language.value }}" data-language="{{ language.name.title() }}"
+                                                   {% if language in secondary %}checked{% endif %}
+                                                   class="size-4 accent-teal-700">
+                                            {{ language.name.title() }}
+                                        </label>
+                                    {% endfor %}
+                                </div>
+                            </details>
+                        </div>
+                        <p class="mt-1.5 text-xs text-[#4d6661]">Choose different primary and secondary languages.</p>
+                    </div>
+                </div>
+                <button class="cursor-pointer rounded-lg bg-teal-700 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 sm:ml-44">Save languages</button>
+            </form>
+
+            <div class="flex items-start justify-between gap-3 border-t border-[#d9e6e0] p-5 sm:px-7">
+                <details {% if failed_action == 'delete' %}open{% endif %}>
+                    <summary class="w-fit cursor-pointer list-none rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-800 hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-red-700 [&::-webkit-details-marker]:hidden">Delete account</summary>
+                    <form action="/account/delete" method="post" class="mt-3 max-w-md space-y-3 text-sm">
+                        <p class="text-[#4d6661]">This permanently deletes your saved books, reading history, and language preferences.</p>
+                        <label class="block font-medium">Current password
+                            <input type="password" name="current_password" autocomplete="current-password" maxlength="256" required class="{{ field }}">
+                        </label>
+                        <label class="flex items-center gap-2">
+                            <input type="checkbox" name="confirm_delete" value="true" required class="size-4 accent-red-700">
+                            I want to delete my account.
+                        </label>
+                        <button class="cursor-pointer rounded-lg bg-red-700 px-3.5 py-2 text-sm font-semibold text-white hover:bg-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700">Confirm deletion</button>
+                    </form>
+                </details>
+                <form action="/logout" method="post" class="shrink-0">
+                    <button class="cursor-pointer rounded-lg border border-[#d9e6e0] px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700">Sign out</button>
+                </form>
+            </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}
+{% block scripts %}
+{% if user %}
+<script>
+    const primary = document.getElementById("primary-language");
+    const chips = document.getElementById("secondary-chips");
+    const template = document.getElementById("secondary-chip");
+    const choices = document.querySelectorAll('#language-preferences input[name="secondary"]');
+    function showSecondaryLanguages() {
+        chips.replaceChildren();
+        for (const choice of choices) {
+            choice.disabled = choice.value === primary.value;
+            if (choice.disabled) choice.checked = false;
+            if (!choice.checked) continue;
+            const chip = template.content.firstElementChild.cloneNode(true);
+            chip.firstElementChild.textContent = choice.dataset.language;
+            chip.setAttribute("aria-label", "Remove " + choice.dataset.language);
+            chip.addEventListener("click", () => {
+                choice.checked = false;
+                showSecondaryLanguages();
+                chips.parentElement.querySelector("summary").focus();
+            });
+            chips.append(chip);
+        }
+    }
+    document.getElementById("language-preferences").addEventListener("change", showSecondaryLanguages);
+    showSecondaryLanguages();
+</script>
+{% endif %}
+{% endblock %}

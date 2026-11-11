@@ -1,0 +1,12 @@
+{%- if q -%}
+    {% if books %}
+        <ul class="p-1">
+            {% for book, _, _ in books %}
+                <li><a href="/books/{{ book.id_book }}" class="block rounded-lg px-3 py-2 text-sm hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700">{{ book.title }}</a></li>
+            {% endfor %}
+        </ul>
+        <a href="/search?q={{ q|urlencode }}" class="block border-t border-[#d9e6e0] px-4 py-2.5 text-sm font-semibold text-teal-800 hover:bg-teal-50">View search results</a>
+    {% else %}
+        <p class="px-4 py-3 text-sm text-[#4d6661]">No books found.</p>
+    {% endif %}
+{%- endif -%}

@@ -1,0 +1,72 @@
+{% from "icons.html" import icon %}
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Reader{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif&display=swap" rel="stylesheet">
+    <style>:root { --font-reader: "DM Sans", sans-serif; --font-reader-display: "Instrument Serif", Georgia, serif; }</style>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}">
+    <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"></script>
+</head>
+<body class="min-h-screen bg-[#f7faf8] font-[family-name:var(--font-reader)] text-[#102927] antialiased">
+    <header class="border-b border-[#d9e6e0] bg-white">
+        <div class="mx-auto grid max-w-[1440px] grid-cols-[1fr_auto] items-center gap-x-5 gap-y-3 px-4 py-3 sm:px-8 lg:min-h-20 lg:grid-cols-[1fr_minmax(0,560px)_1fr] lg:px-12 xl:px-20">
+            <a href="/" class="flex w-fit items-center gap-2.5 rounded-lg focus-visible:outline-2 focus-visible:outline-teal-700" {% if request.url.path == '/' %}aria-current="page"{% endif %}>
+                <span class="grid size-9 place-items-center rounded-xl bg-teal-700 text-white sm:size-10">{{ icon("book", 23) }}</span>
+                <span class="font-[family-name:var(--font-reader-display)] text-[34px] leading-none sm:text-[38px]">Reader</span>
+            </a>
+            <form action="/search" role="search" class="relative col-span-2 row-start-2 flex h-11 items-center rounded-[10px] border border-[#d9e6e0] bg-[#f7faf8] focus-within:border-teal-600 lg:col-span-1 lg:row-start-auto">
+                <label for="search" class="sr-only">Search titles</label>
+                <input id="search" name="q" type="search" value="{{ q|default('') }}" placeholder="Search titles…" autocomplete="off" maxlength="200"
+                       hx-get="/search" hx-trigger="input changed delay:300ms" hx-target="#search-preview" hx-sync="this:replace"
+                       class="h-full min-w-0 flex-1 rounded-l-[10px] px-4 text-[15px] placeholder:text-[#4d6661] focus:outline-none">
+                <button type="submit" aria-label="Search" class="grid h-full w-11 cursor-pointer place-items-center rounded-r-[10px] text-teal-700 hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700">
+                    {{ icon("search", 20) }}
+                </button>
+                <div id="search-preview" class="absolute inset-x-0 top-full z-30 mt-2 max-h-[60vh] overflow-auto rounded-xl border border-[#d9e6e0] bg-white shadow-lg empty:hidden"></div>
+            </form>
+            <nav aria-label="Reader" class="col-start-2 row-start-1 flex justify-end gap-1.5 sm:gap-2 lg:col-start-auto lg:row-start-auto">
+                {% for name, label in (("library", "My Library"), ("history", "History"), ("catalog", "Catalog"), ("settings", "Settings"), ("account", "Account")) %}
+                    {% set active = request.url.path == "/" ~ name %}
+                    <a href="/{{ name }}" aria-label="{{ label }}" title="{{ label }}" {% if active %}aria-current="page"{% endif %}
+                       class="grid size-8 place-items-center rounded-full border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 sm:size-10
+                              {{ 'border-teal-100 bg-teal-100 text-teal-800' if active else 'border-[#d9e6e0] bg-white text-[#4d6661] hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800' }}">
+                        {{ icon(name, 20) }}
+                    </a>
+                {% endfor %}
+            </nav>
+        </div>
+    </header>
+    <main class="mx-auto max-w-[1440px] px-4 pt-8 pb-16 sm:px-8 lg:px-12 xl:px-20">
+        {% block content %}{% endblock %}
+    </main>
+    <script>
+        document.addEventListener("click", (event) => {
+            for (const popup of document.querySelectorAll("details[data-status][open], details[data-popup][open]")) {
+                if (!popup.contains(event.target)) popup.open = false;
+            }
+            const search = document.getElementById("search-preview");
+            search.hidden = !search.parentElement.contains(event.target);
+        });
+        document.addEventListener("keydown", (event) => {
+            if (event.key !== "Escape") return;
+            const popup = document.activeElement.closest("details[data-status][open], details[data-popup][open]");
+            if (popup) {
+                popup.open = false;
+                popup.querySelector("summary").focus();
+            }
+            const search = document.getElementById("search-preview");
+            if (event.target.id === "search" && !search.hidden && search.childElementCount) event.preventDefault();
+            search.hidden = true;
+        });
+        document.getElementById("search").addEventListener("input", () => {
+            document.getElementById("search-preview").hidden = false;
+        });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

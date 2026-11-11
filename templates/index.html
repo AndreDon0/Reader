@@ -1,28 +1,22 @@
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Reader</title>
-    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-</head>
-<body>
-    <h1>Book Library</h1>
-
-    <input
-        type="search"
-        name="q"
-        placeholder="Search books..."
-
-        hx-get="/search"
-        hx-trigger="input changed delay:300ms"
-        hx-target="#results"
-        hx-swap="innerHTML"
-        hx-sync="this:replace"
-    >
-
-    <div id="results"></div>
-</body>
-</html>
+{% extends "base.html" %}
+{% from "cards.html" import book_grid %}
+{% block content %}
+<section aria-labelledby="shelf-heading" class="rounded-[22px] bg-linear-to-br from-teal-950 to-teal-900 px-4 py-7 text-white sm:px-8 xl:px-10 xl:py-8">
+    <h1 id="shelf-heading" class="mb-5 font-[family-name:var(--font-reader-display)] text-[42px] leading-tight text-teal-50 sm:text-[52px]">New from my library</h1>
+    {% if shelf %}
+        {{ book_grid(shelf, request, profile_enabled, statuses, compact=true, dark=true) }}
+    {% elif profile_enabled %}
+        <p class="text-teal-100">No new releases from your library.</p>
+    {% else %}
+        <a href="/login?next=/" class="text-teal-100 underline underline-offset-4 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-200">Sign in to see new chapters from your library</a>
+    {% endif %}
+</section>
+<section aria-labelledby="new-on-site" class="mt-10">
+    <h2 id="new-on-site" class="mb-5 font-[family-name:var(--font-reader-display)] text-[44px] leading-none sm:text-[50px]">New on the site</h2>
+    {% if books %}
+        {{ book_grid(books, request, profile_enabled, statuses, compact=true, releases=true) }}
+    {% else %}
+        <p class="text-[#4d6661]">No chapter releases yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

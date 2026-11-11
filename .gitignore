@@ -15,6 +15,5 @@ node_modules
 .env
 
 # Local folders and projects
-playground.ipynb
 logs/
 tmp/

@@ -1,9 +1,11 @@
-{% for book in books %}
-    <div class="book">
-        <h3>{{ book.title }}</h3>
-    </div>
+{% extends "base.html" %}
+{% from "cards.html" import book_grid %}
+{% block title %}Search · Reader{% endblock %}
+{% block content %}
+<h1 class="mb-5 font-[family-name:var(--font-reader-display)] text-5xl leading-tight sm:text-[57px]">Search</h1>
+{% if books %}
+    {{ book_grid(books, request, profile_enabled, statuses) }}
 {% else %}
-    {% if q.strip() %}
-        <p>No books found.</p>
-    {% endif %}
-{% endfor %}
+    <p class="text-[#4d6661]">{{ 'No books found.' if q else 'Enter a title to search the library.' }}</p>
+{% endif %}
+{% endblock %}

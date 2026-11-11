@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "cards.html" import book_grid %}
+{% block title %}My Library · Reader{% endblock %}
+{% block content %}
+<div class="mb-5 flex items-center gap-4">
+    <h1 class="sr-only shrink-0 text-xl leading-tight font-semibold md:not-sr-only">My Library</h1>
+    <nav aria-label="Filter library by status" class="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-[#d9e6e0] bg-white p-1">
+        {% for status in ("all",) + statuses %}
+            <a href="{{ '/library' if status == 'all' else '/library?status=' ~ status }}"
+               {% if selected == status %}aria-current="page"{% endif %}
+               class="shrink-0 rounded-lg px-3 py-2.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-teal-700 sm:px-5 sm:text-sm
+                      {{ 'bg-teal-100 text-teal-950' if selected == status else 'text-[#4d6661] hover:bg-teal-50 hover:text-teal-800' }}">
+                {{ status|capitalize }}
+            </a>
+        {% endfor %}
+    </nav>
+    <span class="ml-auto hidden shrink-0 text-sm font-medium text-[#4d6661] sm:inline">{{ books|length }} {{ 'title' if books|length == 1 else 'titles' }}</span>
+</div>
+{% if books %}
+    {{ book_grid(books, request, profile_enabled, statuses) }}
+{% else %}
+    <p class="rounded-xl border border-[#d9e6e0] bg-white p-6 text-[#4d6661]">{{ 'Your library is empty.' if selected == 'all' else 'No books with this status.' }}</p>
+{% endif %}
+{% endblock %}
