@@ -1,4 +1,5 @@
 import os
+import re
 from hmac import compare_digest, digest
 from secrets import token_hex
 from time import time
@@ -65,15 +66,17 @@ def signed_out(request, target):
     return response
 
 
-def sign_in_required(request):
-    target = request.url.path
-    if request.url.query:
-        target += "?" + request.url.query
+def sign_in_required(request, target=None):
+    if target is None:
+        target = request.url.path
+        if request.url.query:
+            target += "?" + request.url.query
     return RedirectResponse("/login?" + urlencode({"next": target}), status_code=303)
 
 
 def account_target(target):
-    return target if target.partition("?")[0] in ("/", "/account", "/library", "/history") else "/account"
+    path = target.partition("?")[0]
+    return target if path in ("/", "/account", "/library", "/history") or re.fullmatch(r"/books/\d+", path) else "/account"
 
 
 def auth_page(request, target, **context):

@@ -3,6 +3,7 @@ import time
 
 from database import SessionLocal
 from sites.base_site import BaseSite
+from sites.downloads import cache_enabled_books
 from sites.registry import SITE_CLASSES
 from utils.custom_request import check_vpn_pool, close_vpn_pools
 from utils.logging_config import configure_logging
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 INTERVAL = 300
 pool = PriorityPool()
 sites = [site(SessionLocal) for site in SITE_CLASSES]
+download_job = None
 
 def process_site(site: BaseSite) -> None:
     if site.is_up():
@@ -22,11 +24,20 @@ def process_site(site: BaseSite) -> None:
 
 
 def iter() -> None:
+    global download_job
     start_time = time.time()
     check_vpn_pool(probe_url="https://github.com/")
 
     for site in sites:
-        process_site(site)
+        try:
+            process_site(site)
+        except Exception:
+            logger.exception("Could not poll %s", site.name)
+
+    if download_job is None or download_job.done():
+        if download_job is not None and (error := download_job.exception()) is not None:
+            logger.error("Chapter download sweep failed", exc_info=error)
+        download_job = pool.submit(cache_enabled_books, priority=20)
 
     sleep_time = INTERVAL - (time.time() - start_time)
     if sleep_time < 0:

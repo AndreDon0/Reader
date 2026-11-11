@@ -1,0 +1,3 @@
+{% from "cards.html" import book_cards %}
+{{ book_cards(books, request, profile_enabled, statuses, compact=true, releases=true) }}
+{% include "release_more.html" %}

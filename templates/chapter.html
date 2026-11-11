@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% from "icons.html" import icon %}
+{% block title %}{{ chapter.name or 'Chapter ' ~ chapter.number }} · {{ book.title }} · Reader{% endblock %}
+{% block content %}
+{% set chapter_base = '/books/' ~ book.id_book ~ '/chapters/' %}
+{% set control = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-[#d9e6e0] bg-white px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700' %}
+<div class="mx-auto max-w-5xl">
+    <nav aria-label="Breadcrumb" class="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm leading-6 text-[#4d6661]">
+        <a href="/catalog?site={{ site.id_site }}" class="font-semibold text-teal-800 hover:underline">{{ site.name }}</a><span aria-hidden="true">/</span>
+        <a href="/books/{{ book.id_book }}" class="font-semibold wrap-break-word text-teal-800 hover:underline">{{ book.title }}</a><span aria-hidden="true">/</span>
+        <h1 aria-current="page" class="font-semibold wrap-break-word text-[#102927]">{{ chapter.name or 'Chapter ' ~ chapter.number }}</h1>
+    </nav>
+
+    <article id="chapter-content" class="mx-auto mt-5 max-w-3xl overflow-hidden rounded-2xl border border-[#d9e6e0] bg-white">
+        {% if content %}
+            <div class="px-5 py-7 text-[17px] leading-[1.85] whitespace-pre-wrap wrap-break-word sm:px-10">{{ content }}</div>
+        {% elif page_count %}
+            {% for page in range(1, page_count + 1) %}
+                <img src="{{ chapter_base }}{{ chapter.id_chapter }}/pages/{{ page }}" alt="Page {{ page }}" {% if not loop.first %}loading="lazy"{% endif %} decoding="async" class="mx-auto block aspect-[auto_2/3] h-auto w-full">
+            {% endfor %}
+        {% else %}
+            <div class="p-6 text-sm text-[#4d6661]">Chapter content is unavailable. <a href="{{ chapter_base }}{{ chapter.id_chapter }}" class="font-semibold text-teal-800 underline">Try again</a></div>
+        {% endif %}
+    </article>
+
+    <nav aria-label="Chapter navigation" class="mt-5 flex items-center justify-center gap-2 sm:gap-3">
+        {% if previous %}
+            <a href="{{ chapter_base }}{{ previous.id_chapter }}" rel="prev" aria-label="Previous chapter" class="{{ control }}">{{ icon("previous", 18) }}</a>
+        {% else %}
+            <span aria-disabled="true" aria-label="Previous chapter" class="grid size-10 place-items-center rounded-lg border border-[#d9e6e0] text-[#4d6661] opacity-45">{{ icon("previous", 18) }}</span>
+        {% endif %}
+        <details data-popup class="relative">
+            <summary class="{{ control }} cursor-pointer list-none [&::-webkit-details-marker]:hidden">{{ icon("contents", 18) }} Chapters</summary>
+            <ul class="absolute bottom-full left-1/2 z-20 mb-2 max-h-72 w-72 max-w-[85vw] -translate-x-1/2 overflow-y-auto rounded-xl border border-[#d9e6e0] bg-white p-1.5 shadow-lg">
+                {% for entry in chapters %}
+                    <li>
+                        <a href="{{ chapter_base }}{{ entry.id_chapter }}" {% if entry.id_chapter == chapter.id_chapter %}aria-current="page"{% endif %}
+                           class="block rounded-lg px-3 py-2 text-sm wrap-break-word hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700 aria-[current=page]:bg-teal-100 aria-[current=page]:font-semibold">{{ entry.name or 'Chapter ' ~ entry.number }}</a>
+                    </li>
+                {% endfor %}
+            </ul>
+        </details>
+        {% if following %}
+            <a href="{{ chapter_base }}{{ following.id_chapter }}" rel="next" aria-label="Next chapter" class="{{ control }}">{{ icon("next", 18) }}</a>
+        {% else %}
+            <span aria-disabled="true" aria-label="Next chapter" class="grid size-10 place-items-center rounded-lg border border-[#d9e6e0] text-[#4d6661] opacity-45">{{ icon("next", 18) }}</span>
+        {% endif %}
+    </nav>
+</div>
+{% endblock %}
+{% block scripts %}
+{% if progress is not none %}
+<script>
+    const reader = document.getElementById("chapter-content");
+    const images = [...reader.querySelectorAll("img")];
+    const progressUrl = {{ ("/books/" ~ book.id_book ~ "/chapters/" ~ chapter.id_chapter ~ "/progress")|tojson }};
+    let saved = {{ progress|tojson }};
+    let timer;
+    let moved = false;
+
+    function textRange() {
+        return Math.max(0, reader.offsetHeight - window.innerHeight);
+    }
+
+    function currentPosition() {
+        const bounds = reader.getBoundingClientRect();
+        if (bounds.top >= 0) return 0;
+        if (bounds.bottom <= window.innerHeight) return 1;
+        if (images.length) {
+            const index = images.findIndex(image => image.getBoundingClientRect().bottom > 0);
+            if (index < 0) return 1;
+            const page = images[index].getBoundingClientRect();
+            return (index + Math.max(0, -page.top) / Math.max(1, page.height)) / images.length;
+        }
+        return Math.min(1, -bounds.top / Math.max(1, textRange()));
+    }
+
+    function savePosition() {
+        if (!moved) return;
+        const position = currentPosition();
+        if (Math.abs(position - saved) < 0.00001) return;
+        const data = new URLSearchParams({stopped_at: position});
+        if (navigator.sendBeacon(progressUrl, data)) {
+            saved = position;
+        } else {
+            fetch(progressUrl, {method: "POST", body: data, keepalive: true})
+                .then(response => { if (response.ok) saved = position; })
+                .catch(() => {});
+        }
+    }
+
+    async function restorePosition() {
+        if (!saved) return;
+        if (images.length) {
+            const offset = saved * images.length;
+            const index = Math.min(images.length - 1, Math.floor(offset));
+            const image = images[index];
+            image.loading = "eager";
+            const scrollToPage = () => {
+                const page = image.getBoundingClientRect();
+                window.scrollTo(0, window.scrollY + page.top + (offset - index) * page.height);
+            };
+            scrollToPage();
+            const initialScroll = window.scrollY;
+            try {
+                await image.decode();
+                if (Math.abs(window.scrollY - initialScroll) < 2) scrollToPage();
+            } catch {
+                // Keep the position calculated from the image placeholder.
+            }
+        } else {
+            window.scrollTo(0, window.scrollY + reader.getBoundingClientRect().top + saved * textRange());
+        }
+    }
+
+    history.scrollRestoration = "manual";
+    requestAnimationFrame(async () => {
+        await restorePosition();
+        requestAnimationFrame(() => window.addEventListener("scroll", () => {
+            moved = true;
+            clearTimeout(timer);
+            timer = setTimeout(savePosition, 350);
+        }, {passive: true}));
+    });
+    window.addEventListener("pagehide", savePosition);
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) savePosition();
+    });
+</script>
+{% endif %}
+{% endblock %}

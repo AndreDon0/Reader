@@ -1,0 +1,7 @@
+{% if next_page %}
+    <div class="col-span-full text-center">
+        <a href="{{ next_page }}" hx-get="{{ next_page }}" hx-trigger="revealed, click"
+           hx-target="closest div" hx-swap="outerHTML" hx-sync="this:drop"
+           class="inline-block rounded-lg border border-[#d9e6e0] bg-white px-4 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700">Load more chapters</a>
+    </div>
+{% endif %}

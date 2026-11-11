@@ -3,16 +3,17 @@ import re
 from urllib.parse import urljoin
 import json
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from tqdm import tqdm
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from models import Author, Book, BookStatus, BookType, Chapter, Tag, Language
 from sites.base_site import BaseSite
 from utils.custom_request import request_soup
 from utils.db import get_or_create, transactional
-from config import FILES_PATH
 from utils.logging_config import check_none
 from utils.checkpoint import save_checkpoint, load_checkpoint
 
@@ -108,6 +109,7 @@ class Novgo(BaseSite):
             },
             url=book_url,
         )
+        book.chapters_count = chapters_count
 
         saved = session.execute(
             select(Chapter.number, Chapter.url)
@@ -153,24 +155,41 @@ class Novgo(BaseSite):
 
     @transactional
     def process_chapter(self, chapter_url: str, session: Session) -> None:
+        from sites.downloads import cache_chapter
+
         chapter = session.scalar(
-            select(Chapter).where(Chapter.url == chapter_url)
+            select(Chapter).join(Chapter.book)
+            .where(Chapter.url == chapter_url, Book.id_site == self.id_site)
         )
         if chapter is None:
             logger.warning("Chapter not found in database: %s", chapter_url)
+            return
+        cache_chapter(session, chapter, chapter.book.site)
 
+    @staticmethod
+    def download_chapter(chapter_url: str, path: Path) -> str:
+        source = urlsplit(chapter_url)
+        if source.scheme not in {"http", "https"} or source.hostname not in {"novgo.net", "www.novgo.net"}:
+            raise ValueError("Unexpected NOVGO chapter URL")
         soup = request_soup(chapter_url, timeout=3)
-
-        chapter_name = check_none(soup.select_one(".chapter-text").get_text(strip=True), "chapter_name")
-        content = check_none(soup.select_one("#chapter-content.chapter-c").get_text("\n", strip=True), "content", level=logging.ERROR)
-
-        path = FILES_PATH / f"{self.id_site}" / f"{chapter.id_book}" / f"{chapter.id_chapter}"
+        heading = soup.select_one(".chapter-text") if soup is not None else None
+        body = soup.select_one("#chapter-content.chapter-c") if soup is not None else None
+        chapter_name = heading.get_text(strip=True) if heading else ""
+        content = body.get_text("\n", strip=True) if body else ""
+        if not content:
+            raise ValueError("NOVGO returned no chapter text")
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{chapter_name}\n\n{content}\n", encoding="utf-8")
-        chapter.name = chapter_name
-
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
+            tmp_path = Path(temporary.name)
+            try:
+                temporary.write(f"{chapter_name}\n\n{content}\n" if chapter_name else f"{content}\n")
+                temporary.close()
+                tmp_path.replace(path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
         logging.debug("Chapter %s processed", chapter_url)
+        return chapter_name
 
 
     def catalog(self) -> list[str]:

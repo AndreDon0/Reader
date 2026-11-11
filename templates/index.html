@@ -14,7 +14,9 @@
 <section aria-labelledby="new-on-site" class="mt-10">
     <h2 id="new-on-site" class="mb-5 font-[family-name:var(--font-reader-display)] text-[44px] leading-none sm:text-[50px]">New on the site</h2>
     {% if books %}
-        {{ book_grid(books, request, profile_enabled, statuses, compact=true, releases=true) }}
+        {% call book_grid(books, request, profile_enabled, statuses, compact=true, releases=true) %}
+            {% include "release_more.html" %}
+        {% endcall %}
     {% else %}
         <p class="text-[#4d6661]">No chapter releases yet.</p>
     {% endif %}

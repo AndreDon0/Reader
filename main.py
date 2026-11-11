@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
-from web import account, auth, library
+from web import account, auth, library, reading
 from web.views import ROOT, render
 
 
@@ -10,6 +10,7 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 app.include_router(auth.router)
 app.include_router(library.router)
 app.include_router(account.router)
+app.include_router(reading.router)
 
 
 @app.get("/{page:path}")

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "cards.html" import book_grid %}
+{% block title %}Catalog · Reader{% endblock %}
+{% block content %}
+<div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+    <h1 class="text-xl font-semibold">Catalog</h1>
+    <form action="/catalog" class="flex items-center gap-2 text-sm">
+        <label for="catalog-site" class="sr-only">Filter by site</label>
+        <select id="catalog-site" name="site" class="rounded-lg border border-[#d9e6e0] bg-white px-3 py-2">
+            <option value="0">All sites</option>
+            {% for source in sites %}
+                <option value="{{ source.id_site }}" {% if site == source.id_site %}selected{% endif %}>{{ source.name }}</option>
+            {% endfor %}
+        </select>
+        <button class="cursor-pointer rounded-lg border border-[#d9e6e0] bg-white px-3 py-2 font-semibold text-teal-800 hover:bg-teal-50">Filter</button>
+    </form>
+</div>
+{% if books %}
+    {{ book_grid(books, request, profile_enabled, statuses) }}
+{% else %}
+    <p class="text-[#4d6661]">No books available.</p>
+{% endif %}
+{% if page > 1 or has_next %}
+    <nav aria-label="Catalog pages" class="mt-6 flex gap-4 text-sm font-semibold text-teal-800">
+        {% set query = ('site=' ~ site ~ '&') if site else '' %}
+        {% if page > 1 %}<a href="?{{ query }}page={{ page - 1 }}" class="hover:underline">Previous page</a>{% endif %}
+        {% if has_next %}<a href="?{{ query }}page={{ page + 1 }}" class="hover:underline">Next page</a>{% endif %}
+    </nav>
+{% endif %}
+{% endblock %}

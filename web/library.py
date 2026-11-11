@@ -1,19 +1,22 @@
 from calendar import month_abbr
 from datetime import date, datetime, timedelta
 from typing import Literal
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import and_, func, select
-from sqlalchemy.dialects.postgresql import distinct_on, insert
+from pydantic import AwareDatetime
+from sqlalchemy import and_, func, select, true
+from sqlalchemy.dialects.postgresql import insert
 
 from database import SessionLocal
-from models import Book, Chapter, Followed, FollowedStatus, ReadChapter
+from models import Book, Chapter, Followed, FollowedStatus, ReadChapter, Site
 from web.auth import profile, same_origin, sign_in_required
 from web.views import STATUSES, TZ, date_label, render
 
 
 router = APIRouter()
+RELEASE_PAGE_SIZE = 12
 
 
 def book_cards(user_id=None):
@@ -34,32 +37,49 @@ def book_cards(user_id=None):
 
 release_time = func.coalesce(Chapter.published_on, Chapter.discovered_at)
 latest_release = (
-    select(Chapter.id_book, Chapter.number, release_time.label("at"))
-    .ext(distinct_on(Chapter.id_book))
-    .order_by(Chapter.id_book, release_time.desc(), Chapter.number.desc())
-    .subquery()
+    select(Chapter.number, release_time.label("at"))
+    .where(Chapter.id_book == Book.id_book)
+    .correlate(Book)
+    .order_by(release_time.desc(), Chapter.number.desc())
+    .limit(1)
+    .lateral()
 )
 
 
 @router.get("/")
-def index(request: Request):
+def index(request: Request, before: AwareDatetime | None = None,
+          before_book: int | None = Query(None, ge=1, le=2_147_483_647)):
+    if (before is None) != (before_book is None):
+        raise HTTPException(400, "Provide both release cursor fields.")
+    partial = before is not None and request.headers.get("HX-Request") == "true"
     with SessionLocal() as session:
         user = profile(request, session)
         cards, read_at = book_cards(user.id_user if user else None)
+        releases = cards.join(latest_release, true())
         shelf = session.execute(
-            cards.join(latest_release, latest_release.c.id_book == Book.id_book)
+            releases
             .where(Followed.status != FollowedStatus.DROPPED)
             .where(read_at.is_(None) | (latest_release.c.at > read_at))
             .order_by(latest_release.c.at.desc(), Book.id_book)
             .limit(6)
-        ).all() if user else []
+        ).all() if user and not partial else []
+        if before is not None:
+            releases = releases.where(
+                (latest_release.c.at < before)
+                | ((latest_release.c.at == before) & (Book.id_book > before_book))
+            )
         books = session.execute(
-            cards.join(latest_release, latest_release.c.id_book == Book.id_book)
-            .add_columns(latest_release.c.number, latest_release.c.at)
+            releases.add_columns(latest_release.c.number, latest_release.c.at)
             .order_by(latest_release.c.at.desc(), Book.id_book)
-            .limit(12)
+            .limit(RELEASE_PAGE_SIZE + 1)
         ).all()
-    return render(request, "index", shelf=shelf, books=books, profile_enabled=user is not None)
+    next_page = None
+    if len(books) > RELEASE_PAGE_SIZE:
+        books = books[:RELEASE_PAGE_SIZE]
+        book, _, _, _, released_at = books[-1]
+        next_page = "/?" + urlencode({"before": released_at.isoformat(), "before_book": book.id_book})
+    return render(request, "release_page" if partial else "index", shelf=shelf, books=books,
+                  next_page=next_page, profile_enabled=user is not None)
 
 
 @router.get("/search")
@@ -79,6 +99,23 @@ def search(request: Request, q: str = Query("", max_length=200)):
             ).all()
     return render(request, "search_preview" if preview else "results", books=books, q=q,
                   profile_enabled=user is not None)
+
+
+@router.get("/catalog")
+def catalog(request: Request, site: int = Query(0, ge=0, le=2_147_483_647),
+            page: int = Query(1, ge=1, le=2_147_483_647)):
+    page_size = 48
+    with SessionLocal() as session:
+        user = profile(request, session)
+        cards, _ = book_cards(user.id_user if user else None)
+        if site:
+            cards = cards.where(Book.id_site == site)
+        books = session.execute(
+            cards.order_by(Book.title, Book.id_book).offset((page - 1) * page_size).limit(page_size + 1)
+        ).all()
+        sites = session.scalars(select(Site).order_by(Site.name)).all()
+    return render(request, "catalog", books=books[:page_size], sites=sites, site=site, page=page,
+                  has_next=len(books) > page_size, profile_enabled=user is not None)
 
 
 @router.get("/library")
@@ -116,7 +153,7 @@ def save_book(request: Request, book_id: int, status: FollowedStatus | Literal["
             session.execute(statement.on_conflict_do_update(
                 index_elements=[Followed.id_user, Followed.id_book], set_={"status": statement.excluded.status}
             ))
-    if return_to.partition("?")[0] not in ("/", "/library", "/history", "/search"):
+    if return_to.partition("?")[0] not in ("/", "/library", "/history", "/search", "/catalog"):
         return_to = "/library"
     return RedirectResponse(return_to, status_code=303)
 
