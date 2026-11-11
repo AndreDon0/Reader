@@ -1,4 +1,5 @@
 {% from "icons.html" import icon %}
+{% from "library_control.html" import library_control %}
 {% macro book_grid(books, request, profile_enabled, statuses, compact=false, dark=false, releases=false) %}
 <div class="grid grid-cols-1 gap-x-4 gap-y-7 min-[360px]:grid-cols-2 sm:gap-x-6 {{ 'md:grid-cols-3 lg:grid-cols-6' if compact else 'md:grid-cols-3 xl:grid-cols-4' }}">
     {{ book_cards(books, request, profile_enabled, statuses, compact, dark, releases) }}
@@ -21,42 +22,7 @@
                 <span class="pointer-events-none absolute top-2 left-2 rounded-md bg-teal-950/95 px-1.5 py-1 text-[10px] leading-4 font-semibold text-white sm:px-2 {{ 'xl:text-xs' if not compact }}">{{ book.type.value|capitalize }}</span>
                 {% if profile_enabled %}
                     {% set return_to = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
-                    {% if status %}
-                        {% set tones = {
-                            'planning': 'border-[#d9e6e0] bg-white text-[#102927]',
-                            'reading': 'border-teal-100 bg-teal-50 text-teal-950',
-                            'dropped': 'border-[#d9e6e0] bg-[#f7faf8] text-[#4d6661]',
-                            'completed': 'border-teal-700 bg-teal-700 text-white'
-                        } %}
-                        <details data-status class="absolute top-2 right-2 open:z-10">
-                            <summary aria-label="Change status for {{ book.title }} ({{ status.value }})"
-                                     class="flex cursor-pointer list-none items-center gap-1 rounded-full border px-1.5 py-1 text-[10px] leading-4 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 [&::-webkit-details-marker]:hidden {{ 'sm:px-2.5 sm:text-xs' if not compact }} {{ tones[status.value] }}">
-                                {{ status.value|capitalize }} {{ icon("chevron", 12) }}
-                            </summary>
-                            <form method="post" action="/library/{{ book.id_book }}" class="absolute top-full right-0 z-20 mt-1 w-34 rounded-xl border border-[#d9e6e0] bg-white p-1 text-[#102927] shadow-lg sm:w-40">
-                                <input type="hidden" name="return_to" value="{{ return_to }}">
-                                {% for choice in statuses %}
-                                    <button name="status" value="{{ choice }}" class="flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-teal-700 {{ 'bg-teal-100 font-semibold' if choice == status.value }}">
-                                        {{ choice|capitalize }}
-                                        {% if choice == status.value %}<span class="text-teal-700">{{ icon("check", 15) }}</span>{% endif %}
-                                    </button>
-                                {% endfor %}
-                                <div class="mt-1 border-t border-[#d9e6e0] pt-1">
-                                    <button name="status" value="remove" class="w-full cursor-pointer rounded-lg px-2.5 py-1.5 text-left text-sm font-medium text-red-800 hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-red-700">
-                                        Delete from library
-                                    </button>
-                                </div>
-                            </form>
-                        </details>
-                    {% else %}
-                        <form method="post" action="/library/{{ book.id_book }}" class="absolute top-2 right-2">
-                            <input type="hidden" name="return_to" value="{{ return_to }}">
-                            <button name="status" value="planning" aria-label="Add {{ book.title }} to My Library" title="Add to My Library"
-                                    class="grid size-8 cursor-pointer place-items-center rounded-full border border-[#d9e6e0] bg-white text-teal-700 hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600">
-                                {{ icon("bookmark", 16) }}
-                            </button>
-                        </form>
-                    {% endif %}
+                    {{ library_control(book, status, return_to, statuses, cover=true, compact=compact) }}
                 {% endif %}
             </div>
             <div class="mt-2.5 flex flex-wrap justify-between gap-x-2 text-[13px] leading-5">

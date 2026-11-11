@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import AwareDatetime
-from sqlalchemy import and_, func, select, true
+from sqlalchemy import and_, case, func, select, true
 from sqlalchemy.dialects.postgresql import insert
 
 from database import SessionLocal
@@ -89,12 +89,17 @@ def search(request: Request, q: str = Query("", max_length=200)):
     books = []
     user = None
     if q:
+        relevance = case(
+            (func.lower(Book.title) == func.lower(q), 0),
+            (Book.title.istartswith(q, autoescape=True), 1),
+            else_=2,
+        )
         with SessionLocal() as session:
             user = profile(request, session) if not preview else None
             cards, _ = book_cards(user.id_user if user else None)
             books = session.execute(
                 cards.where(Book.title.icontains(q, autoescape=True))
-                .order_by(Book.title, Book.id_book)
+                .order_by(relevance, Book.title, Book.id_book)
                 .limit(10 if preview else 60)
             ).all()
     return render(request, "search_preview" if preview else "results", books=books, q=q,
@@ -138,9 +143,15 @@ def save_book(request: Request, book_id: int, status: FollowedStatus | Literal["
               return_to: str = Form("/library")):
     if not same_origin(request):
         return render(request, "account", status_code=403, user=None)
+    book_path = f"/books/{book_id}"
+    return_path = return_to.partition("?")[0]
+    if return_path not in ("/", "/library", "/history", "/search", "/catalog", book_path):
+        return_to = "/library"
     with SessionLocal.begin() as session:
         user = profile(request, session, lock=True)
         if not user:
+            if return_path == book_path:
+                return sign_in_required(request, target=return_to)
             return RedirectResponse("/login?next=/library", status_code=303)
         if session.get(Book, book_id) is None:
             return render(request, "development", status_code=404, title="Book unavailable")
@@ -153,8 +164,6 @@ def save_book(request: Request, book_id: int, status: FollowedStatus | Literal["
             session.execute(statement.on_conflict_do_update(
                 index_elements=[Followed.id_user, Followed.id_book], set_={"status": statement.excluded.status}
             ))
-    if return_to.partition("?")[0] not in ("/", "/library", "/history", "/search", "/catalog"):
-        return_to = "/library"
     return RedirectResponse(return_to, status_code=303)
 
 

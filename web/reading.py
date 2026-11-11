@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import joinedload
 
 from database import SessionLocal
-from models import Book, Chapter, ReadChapter
+from models import Book, Chapter, Followed, ReadChapter
 from sites.downloads import cache_book, cache_chapter, cached_file, can_download
 from utils.cbz import IMAGE_TYPES, image_suffix
 from web.auth import profile, same_origin, sign_in_required
@@ -59,9 +59,12 @@ def book_page(request: Request, book_id: int, order: Literal["asc", "desc"] = "a
         site = book.site
         chapters = contents(session, book_id, order)
         downloaded = {chapter.id_chapter for chapter in chapters if cached_file(chapter, site.id_site)}
-        signed_in = profile(request, session) is not None
+        user = profile(request, session)
+        saved = session.get(Followed, (user.id_user, book_id)) if user else None
+        library_status = saved.status if saved else None
     return render(request, "book", book=book, site=site, chapters=chapters, order=order,
-                  downloaded=downloaded, can_download=can_download(site), signed_in=signed_in, failed=failed)
+                  downloaded=downloaded, can_download=can_download(site), signed_in=user is not None,
+                  library_status=library_status, failed=failed)
 
 
 @router.post("/books/{book_id}/download")
