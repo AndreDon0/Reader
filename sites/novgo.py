@@ -80,7 +80,7 @@ class Novgo(BaseSite):
             )
         ]
 
-        status = status_map[info[3].get_text(strip=True).lower()]
+        status = status_map.get(info[3].get_text(strip=True).lower())
 
         rating = rated = None
         stars = soup.select_one(".vote.vote-summary").get_text(" ", strip=True)
@@ -205,5 +205,9 @@ class Novgo(BaseSite):
 
         state = load_checkpoint("novgo", 0)
         for i in tqdm(range(state, len(links)), desc="Processing catalog"):
-            self.process_book(links[i])
+            try:
+                self.process_book(links[i])
+            except Exception as e:
+                e.add_note(f"Failed to process book: {links[i]}")
+                raise
             save_checkpoint("novgo", i + 1)

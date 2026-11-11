@@ -5,21 +5,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Reader</title>
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 </head>
-<body class="bg-slate-950 text-white min-h-screen p-10">
-    <main class="max-w-3xl mx-auto">
-        <h1 class="text-4xl font-bold mb-8">My Books</h1>
+<body>
+    <h1>Book Library</h1>
 
-        <div class="space-y-3">
-            {% for title in titles %}
-                <div class="p-4 bg-slate-800 rounded-xl hover:bg-slate-700 transition">
-                    {{ title }}
-                </div>
-            {% else %}
-                <p class="text-slate-400">No books found.</p>
-            {% endfor %}
-        </div>
-    </main>
+    <input
+        type="search"
+        name="q"
+        placeholder="Search books..."
+
+        hx-get="/search"
+        hx-trigger="input changed delay:300ms"
+        hx-target="#results"
+        hx-swap="innerHTML"
+        hx-sync="this:replace"
+    >
+
+    <div id="results"></div>
 </body>
 </html>

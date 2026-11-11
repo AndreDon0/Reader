@@ -13,4 +13,11 @@ npx @tailwindcss/cli -i ./static/css/input.css -o ./static/css/style.css --watch
 
 ```
 uv run fastapi dev main.py
+uv run fastapi dev main.py --host 0.0.0.0 --port 8000
+```
+
+```
+sudo systemctl enable --now process_novgo.service
+sudo systemctl disable --now process_novgo.service
+journalctl -u reader_update_new.service -f
 ```

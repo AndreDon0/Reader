@@ -1,0 +1,9 @@
+{% for book in books %}
+    <div class="book">
+        <h3>{{ book.title }}</h3>
+    </div>
+{% else %}
+    {% if q.strip() %}
+        <p>No books found.</p>
+    {% endif %}
+{% endfor %}
